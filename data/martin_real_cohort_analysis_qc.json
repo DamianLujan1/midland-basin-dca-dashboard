@@ -1,0 +1,34 @@
+{
+  "selected_wells": 30,
+  "raw_well_month_rows": 1329,
+  "normalized_well_month_rows": 1220,
+  "all_wells_present_through_mop": 33,
+  "p50_month_1_oil_bbl": 12627.5,
+  "p50_peak_oil_bbl": 30297.5,
+  "p50_cum_12_oil_bbl": 175904.0,
+  "p50_cum_24_oil_bbl": 244705.5,
+  "cum12_lower_outliers": 0,
+  "cum12_upper_outliers": 0,
+  "cum12_iqr_lower_fence": 46432.25,
+  "cum12_iqr_upper_fence": 312024.25,
+  "oil_fit": {
+    "qi": 28972.63018741245,
+    "initial_monthly_decline": 0.23500000000000001,
+    "b_factor": 0.8500000000000001,
+    "log_sse": 0.2092952493074626,
+    "fit_points": 23
+  },
+  "gas_fit": {
+    "qi": 26532.007389951745,
+    "initial_monthly_decline": 0.07,
+    "b_factor": 1.3,
+    "log_sse": 0.27079295668248116,
+    "fit_points": 23
+  },
+  "terminal_monthly_decline": 0.008,
+  "oil_economic_cutoff_bbl_per_month": 250.0,
+  "forecast_limit_months": 360,
+  "oil_rate_cutoff_month": 242,
+  "modeled_oil_through_rate_cutoff_bbl": 433696.2181581052,
+  "gas_forecast_external_use": "SUPPRESSED_PENDING_BOUNDARY_FIT_RESOLUTION"
+}
