@@ -1,4 +1,4 @@
-"""Per-well PDP economics: monthly net cash flow, PV10, economic limit, shut-in price.
+"""Per-well PDP economics: monthly net cash flow, PV, economic limit, shut-in price.
 
 Model, per forecast month with oil rate q (bbl) and gas g = GOR * q (mcf):
 
@@ -9,9 +9,12 @@ Model, per forecast month with oil rate q (bbl) and gas g = GOR * q (mcf):
 Royalty owners bear their share of production and ad valorem taxes, so taxes
 are applied to the net revenue interest. Cash flow is positive while
 q >= fixed / (net revenue per bbl - variable), which is the economic limit: the
-forecast stops there. PV10 discounts each month at mid-month. No capital,
-workovers or abandonment cost are included (abandonment discounted from 20+
-years out is small: $150k at year 25 is ~$14k at 10%).
+forecast stops there. PV discounts each month at mid-month (PV10 at the base
+case's 10%/yr). Capex, workovers and plugging and abandonment (P&A) are
+excluded. At ~$150k a well, discounted from each well's economic limit, P&A is
+immaterial for the cohort (about 0.5% of total PV10) but not for the
+shortest-life wells: about 13% to ~20% of PV10 for those with under 4 years
+left, so their PV10 is overstated.
 
 GOR is held at each well's last 12 producing months; Midland Basin GORs usually
 rise with time, so gas revenue is if anything understated.

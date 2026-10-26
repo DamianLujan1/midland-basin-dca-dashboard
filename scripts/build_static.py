@@ -25,7 +25,7 @@ from src.data_loader import load_production  # noqa: E402
 from src.figures import cluster_figure, type_curve_figure, well_figure  # noqa: E402
 from src.pipeline import (RESULTS_CSV, TYPE_CURVE_CSV, load_ensemble,  # noqa: E402
                           run as run_pipeline)
-from src.report import (CLUSTER_NOTE, RANGE_NOTE, RANKING, caption, cohort_metrics,  # noqa: E402
+from src.report import (CLUSTER_NOTE, RANGE_NOTE, caption, cohort_metrics,  # noqa: E402
                         data_note, economics_note, fmt, methodology, ranking_cells,
                         ranking_table, well_detail, well_label, well_metrics, well_ranges)
 from src.type_curve import observed_type_curve  # noqa: E402
@@ -66,8 +66,9 @@ def main() -> None:
             "detail": {k: str(v) for k, v in well_detail(row).items()},
         }
 
-    rank_head = "<tr>" + "".join(f"<th>{html.escape(name)}</th>" for name, _, _ in RANKING) + "</tr>"
-    rank_rows = "".join(cells(r) for r in ranking_cells(ranking_table(ok)))
+    ranking = ranking_table(ok)  # PV column names follow the discount rate
+    rank_head = "<tr>" + "".join(f"<th>{html.escape(name)}</th>" for name in ranking.columns) + "</tr>"
+    rank_rows = "".join(cells(r) for r in ranking_cells(ranking))
     summ_rows = "".join(cells([
         s.cluster, s.wells, fmt(s.mean_retention_12mo, ".0%"),
         fmt(s.mean_retention_36mo, ".0%"), fmt(s.mean_b, ".2f"), fmt(s.mean_Di_annual, ".0%"),

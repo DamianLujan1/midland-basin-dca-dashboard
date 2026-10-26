@@ -19,7 +19,7 @@ and groups wells by decline shape with k-means clustering.
   least squares from the peak month, qi capped at the observed peak rate, b capped at 1.2
 - **EUR & remaining reserves** — forecast from the month after the last reported month
   to each well's economic limit within a 50-year well life
-- **P90 / P50 / P10 ranges** — a 200-member ensemble per well (block bootstrap of the
+- **P90 / P50 / P10 ranges** — a 1,000-member ensemble per well (block bootstrap of the
   fit plus a level factor), calibrated on a leave-one-well-out hindcast so the P90–P10
   range holds 80% of held-out volumes; shown as a band on every forecast chart
 - **PDP economics** — monthly cash flow after royalty, Texas severance and ad valorem
@@ -108,18 +108,23 @@ and groups wells by decline shape with k-means clustering.
    early decline); zero months are kept as shut-ins for the decline clock.
 2. **Decline clock** — a well does not deplete while it is shut in, so decline time is
    *producing* time, not calendar time. Monthly volumes carry no days-on, so the fit
-   runs in two passes. The first fits every producing month, with zero months counted
-   as downtime. Each month's ratio `r = q / q_trend` to that first trend then sets how
-   much of the month it produced and how much it counts in the second fit: under 30% of
-   trend, it produced at trend for `r` of the month and is left out of the fit; over
-   70%, it is a full month at full weight (the shortfall is noise); in between, its
-   share of a month rises linearly from 0.3 to 1 and its weight from 0 to 1. Because
-   nothing switches at a threshold, a small change in one month makes a small change in
-   the fit (no single ±10% month change moves any well's EUR by more than 5.3%). On
-   calendar time, a well that is shut in and then rebounds reads as a flatter decline.
+   runs in two passes, and in each a month's ratio `r` to a reference rate sets how much
+   of the month it produced and how much it counts in the fit: under 30% of the
+   reference, it produced at that rate for `r` of the month and is left out of the fit;
+   over 70%, it is a full month at full weight (the shortfall is noise); in between,
+   its share of a month rises linearly from 0.3 to 1 and its weight from 0 to 1. The
+   first pass's reference is the median of the three months either side (zero months
+   included), which needs no fit; the second pass's is the first fit's trend. Nothing
+   switches at a threshold — a month of a few barrels counts almost exactly like a zero
+   month (1 or 10 bbl in place of 0 moves EUR by at most 0.02%) — so a small change in
+   one month makes a small change in the fit: no single ±10% month change moves any
+   well's EUR by more than 5.9% (DAVIS-LACY 31B, where one of the last months carries
+   the tail). On calendar time, a well that is shut in and then rebounds reads as a
+   flatter decline.
 3. **Arps fit** — `q(t) = qi / (1 + b·Di·t)^(1/b)` with `t` = producing months since
    the peak month, fit in log space via `scipy.optimize.curve_fit` with a robust
-   soft-L1 loss (`f_scale` 0.3) and the weights above; bounds `Di ∈ [0.005, 0.80]/mo`,
+   soft-L1 loss (`f_scale` 0.3) and the weights above, solved to a tolerance of 1e-12
+   (so the fit reproduces on another CPU); bounds `Di ∈ [0.005, 0.80]/mo`,
    `b ∈ [0.05, 1.2]`, `qi ≤ observed peak`. The b cap is a judgement call informed by
    the hindcast, not an analog value from the literature (see *How the fitting method
    was chosen*). Once the instantaneous decline falls to the terminal rate Dmin, the
@@ -140,17 +145,23 @@ and groups wells by decline shape with k-means clustering.
    covers its operating cost — the price below which the well should be shut in now.
    No capital, workovers, abandonment cost or hedges.
 6. **P90 / P50 / P10** (`src/uncertainty.py`) — P50 is the fitted forecast. Each well
-   also gets a 200-member ensemble of Arps curves: the fit's log residuals are
-   resampled in blocks of three consecutive months (keeping their month-to-month
-   correlation), added back to the fitted curve and refitted with the same clock,
-   weights, bounds and loss; each refit's rate is then scaled by a level factor
-   `exp(0.21·z)`, `z` standard normal. P90 and P10 are the ensemble's 10th and 90th
-   percentiles of remaining volume, EUR and PV10 (each separately, never crossing P50),
-   with each member stopping at the economic limit; the chart band is the pointwise
-   10th–90th percentile of the monthly rate. The level factor's 0.21 is calibrated (see
-   *How the ranges were calibrated*); the bootstrap alone covers fewer than half of the
-   held-out volumes, because a well's own residuals miss what moves real production
-   off trend (curtailments, offset frac hits, operating changes).
+   also gets a 1,000-member ensemble of Arps curves: the log residuals of the months
+   the fit gives full weight are resampled in blocks of three consecutive months
+   (keeping their month-to-month correlation), added back to the fitted curve and
+   refitted with the same clock, weights, bounds and loss; each refit's rate is then
+   scaled by a level factor `exp(0.225·z)`, `z` standard normal. Curtailed months stay
+   out of the residual pool (months at 60–70% of trend phase in): their shortfall is
+   downtime, not noise, and resampled into other months it reads as extra dips — the
+   previous version did that, and 59% of its members fell below P50. P90 and P10 are
+   the ensemble's 10th and 90th percentiles of remaining volume, EUR and PV10 (each
+   separately, never crossing P50), with each member stopping at the economic limit;
+   the chart band is the pointwise 10th–90th percentile of the monthly rate. With 1,000
+   members their Monte Carlo error is about 2% (P90 remaining across random seeds:
+   mean coefficient of variation 1.8%, worst well 6.4%, GLYNN-ATCHISON 44M). The level
+   factor's 0.225 is calibrated (see *How the ranges were calibrated*); the bootstrap
+   alone covers fewer than half of the held-out volumes, because a well's own residuals
+   miss what moves real production off trend (curtailments, offset frac hits,
+   operating changes).
 7. **Clustering** — k-means on the log of the share of peak rate the fitted decline
    keeps after 12 and 36 producing months (for wells with less than 36 producing
    months the second value is the fit's extrapolation). That is the decline shape type
@@ -185,24 +196,30 @@ points) made no measurable difference (paired −1.1 points at 12 months, 90% CI
 16% when one month moved by 23 bbl — and gave three wells two self-consistent answers;
 the two-pass fit with a continuous ramp (step 2) replaced it, at a cost of about 0.6
 points of 12-month accuracy (measured at the old 1.5 cap: 23.0% vs 22.4%, CI 0.0 to
-+1.2). `python scripts/backtest.py` reproduces the current comparison:
++1.2). A third review found that the first pass still counted any positive month as a
+full month at full weight, so 1 bbl reported instead of 0 moved EUR by 2–4%; the first
+pass now reads each month against its neighbours (step 2), which left the hindcast
+within ±0.6 points (and one 18-month window drops out: hiding 18 months leaves
+DAVIS-LACY 31M 12, one of them curtailed, under the 12-month minimum).
+`python scripts/backtest.py` reproduces the current comparison:
 
 | Holdout | Wells | earlier (calendar, b ≤ 2) | calendar, b ≤ 1.2 | clock, b ≤ 2 | clock, b ≤ 1.5 | clock, b ≤ 1.0 | **current (clock, b ≤ 1.2)** |
 |---|---|---|---|---|---|---|---|
-| 6 months | 30 | 17.4% (-4.2%) | 18.5% (-6.0%) | 16.8% (-0.4%) | 17.3% (-1.9%) | 18.7% (-5.7%) | 17.9% (-3.8%) |
-| 12 months | 30 | 26.6% (+10.6%) | 23.9% (+3.9%) | 24.5% (+12.6%) | 23.0% (+12.6%) | 20.3% (+0.9%) | 21.5% (+5.0%) |
-| 18 months | 25 | 23.4% (+5.3%) | 20.6% (+2.8%) | 23.5% (+5.4%) | 22.3% (+4.7%) | 19.5% (-1.2%) | 20.6% (+3.8%) |
-| 24 months | 14 | 27.5% (-6.5%) | 23.8% (-13.4%) | 28.2% (+2.7%) | 25.5% (-4.8%) | 22.0% (-14.2%) | 22.5% (-11.7%) |
+| 6 months | 30 | 17.4% (-4.2%) | 18.5% (-6.0%) | 17.1% (-0.6%) | 17.6% (-2.2%) | 19.0% (-5.7%) | 18.2% (-3.6%) |
+| 12 months | 30 | 26.6% (+10.6%) | 23.9% (+3.9%) | 24.4% (+13.1%) | 23.0% (+13.1%) | 20.3% (+1.4%) | 21.5% (+5.3%) |
+| 18 months | 24 | 23.4% (+5.3%) | 20.6% (+2.8%) | 22.8% (+5.2%) | 21.5% (+4.7%) | 19.1% (-1.5%) | 20.0% (+2.7%) |
+| 24 months | 14 | 27.5% (-6.5%) | 23.8% (-13.4%) | 28.5% (+5.1%) | 25.0% (-1.5%) | 21.2% (-12.5%) | 21.9% (-8.1%) |
 
 *Mean absolute held-out volume error (median bias).* The b cap is the larger lever.
 Against a 1.5 cap, 1.2 cuts the error by 1.5 points at 12 months (90% CI 0.5–2.7) and
-1.7 at 18 (0.1–3.4), and is not significantly different at 6 months (+0.7, CI −0.2 to
-+1.6) or 24 (−3.0, CI −6.4 to +0.1). A 1.0 cap is better still at 12 months (by 1.2
-points) but under-forecasts the 24-month window by 14% (median), so 1.2 was kept. Given
-the cap, the clock helps at 12 months (2.4 points better than calendar time at the same
-cap, CI 0.0–6.1) and is level at 18–24. Against the first version (calendar time,
-b ≤ 2) the current method is 5.1 points better at 12 months (1.9–8.8), 2.8 at 18
-(1.2–4.6) and 5.0 at 24 (1.1–9.2), and level at 6 (+0.6, CI −1.6 to +2.9). Caveats: the
+3.2 at 24 (0.1–6.4), and is not significantly different at 6 months (+0.6, CI −0.2 to
++1.5) or 18 (−1.5, CI −3.3 to +0.1). A 1.0 cap is better still at 12 months (by 1.2
+points, CI 0.3–2.1) but under-forecasts the 24-month window by 12.5% (median), so 1.2
+was kept. Given the cap, the clock helps at 12 months (2.5 points better than calendar
+time at the same cap, CI 0.0–6.1) and is level at 18–24. Against the first version
+(calendar time, b ≤ 2) the current method is 5.1 points better at 12 months (1.9–8.9),
+2.7 at 18 (1.1–4.5) and 5.7 at 24 (1.9–9.5), and level at 6 (+0.9, CI −1.5 to +3.5).
+Caveats: the
 candidates, the ramp and the cap were all chosen on these same 30 wells, so the
 intervals are optimistic, and the windows overlap. The gain is real but modest — about a
 fifth less error on a one-year forecast — and these are the honest error bars on such a
@@ -213,24 +230,30 @@ forecast.
 `python scripts/calibrate_ranges.py` hides each well's last 6, 12 or 18 reported months,
 builds the ensemble from the rest exactly as the pipeline does, and asks whether the
 held-out volume falls inside P90–P10. For each window it finds the smallest level
-factor that would cover it; the factor used (0.21) is the split-conformal 80% quantile
-of those (0.203, rounded up). Coverage is then scored leave-one-well-out — each well's
-windows with the factor calibrated on the other 29 wells:
+factor that would cover it; the factor used (0.225) is the split-conformal 80% quantile
+of those. Coverage is then scored leave-one-well-out — each well's windows with the
+factor calibrated on the other 29 wells:
 
 | Holdout | Windows | Coverage of P90–P10, leave-one-well-out | Mean P10/P90 volume ratio | Coverage, bootstrap alone | Coverage, constant width | Interval score: ensemble / constant width |
 |---|---|---|---|---|---|---|
-| 6 months | 30 | 77% | 1.86 | 40% | 80% | 0.951 / 0.884 |
-| 12 months | 30 | 80% | 1.90 | 43% | 80% | 0.981 / 1.004 |
-| 18 months | 25 | 84% | 2.07 | 64% | 80% | 1.034 / 1.003 |
-| All | 85 | 80% | 1.94 | 48% | 80% | 0.986 / 0.961 |
+| 6 months | 30 | 80% | 1.88 | 40% | 80% | 0.905 / 0.879 |
+| 12 months | 30 | 80% | 1.91 | 30% | 80% | 0.943 / 1.001 |
+| 18 months | 24 | 83% | 1.96 | 46% | 83% | 0.981 / 1.011 |
+| All | 84 | 81% | 1.91 | 38% | 81% | 0.940 / 0.960 |
 
 What this does and does not show:
 
-- Over 6–18 months the ranges are calibrated (80% held out, 77–84% by horizon) — but no
-  sharper than a band of fixed relative width around the fit (fit × e^±0.31), which
-  scores slightly better overall on the interval score (Gneiting & Raftery, 2007; lower
-  is better: width plus a penalty for misses). The per-well bootstrap widths do not
-  predict which wells will miss over a year or so.
+- Over 6–18 months the ranges are calibrated (81% of held-out volumes inside, 80–83%
+  by horizon) and somewhat sharper than a band of fixed relative width around the fit
+  (fit × e^±0.30): the interval score (Gneiting & Raftery, 2007; lower is better: width
+  plus a penalty for misses) is 0.940 against 0.960 overall, better at 12 and 18 months
+  and worse at 6. Before curtailed months were taken out of the residual pool the
+  ensemble scored worse than the fixed band (0.986 vs 0.961).
+- P50 (the fit) is a well-centred middle: held-out volumes fell below it in 49% of
+  windows (41 of 84), and below the ensemble median in 48%. Over the full remaining
+  life the ensemble median sits about 4% below P50 (for wells off the b bounds 54% of
+  members fall below it, because the forecast volume is not linear in b and Di); for
+  the 8 wells at the b cap the range is skewed low, because b can only fall.
 - What the ensemble adds is a spread that grows with the forecast horizon, as the
   uncertainty in b and Di compounds, while every member stays a bounded Arps curve. A
   fixed-width band would claim a 30-year remaining volume is as certain as next year's.
@@ -238,62 +261,66 @@ What this does and does not show:
   can test a range for remaining life measured in decades. The level factor is applied
   to the whole remaining life, which is conservative if part of a short-term miss is
   transient.
-- Remaining-volume P10/P90 ratios run 1.8–6.5 (median 2.6); EUR ratios 1.07–2.16
-  (median 1.36), narrower because cumulative production is known.
+- Remaining-volume P10/P90 ratios run 1.9–5.7 (median 2.4); EUR ratios 1.08–2.17
+  (median 1.37), narrower because cumulative production is known.
 
 ### Findings from this cohort
 
 Computed from `results/midland_basin_dca_results.csv` (`python -m src.pipeline` prints
 the headline numbers and the cluster table):
 
-- Mean b-factor **0.86** (median 0.96; 11 of 30 wells above 1), mean nominal initial
+- Mean b-factor **0.86** (median 0.95; 11 of 30 wells above 1), mean nominal initial
   decline **~324%/yr** (median 312%/yr) — classic steep shale decline from flush
   production. **8 wells are held at the 1.2 b cap** (DAVIS-LACY 31I #1, SCHARBAUER-DOVE
-  7D #4 and 7F #8, DAVIS-LACY 31K #9, EPLEY-MARTIN 31D #11, FORTUNE-ASHLEY 31M #12,
-  EPLEY-MARTIN 31H #18, GLYNN-ATCHISON 44M #25); they hold 33% of cohort EUR, and their
+  7D #4 and 7F #7, DAVIS-LACY 31K #9, EPLEY-MARTIN 31D #11, FORTUNE-ASHLEY 31M #12,
+  EPLEY-MARTIN 31H #18, GLYNN-ATCHISON 44M #25); they hold 32% of cohort EUR, and their
   EURs carry the cap (a 1.5 cap adds 2.2% to the cohort mean, see below).
-- Mean EUR **~501,000 bbl** per well (median ~502,000; range ~169,000–865,000 bbl); mean
-  P90–P10 **~402,000–577,000 bbl**. The widest ranges are DAVIS-LACY 31K (332,000–717,000)
-  — at the b cap after a curtailment — EPLEY-MARTIN 31E and DAVIS-LACY 31F.
+- Mean EUR **~501,000 bbl** per well (median ~501,000; range ~169,000–865,000 bbl); mean
+  P90–P10 **~415,000–588,000 bbl**. The widest ranges (P10 minus P90) are DAVIS-LACY 31K
+  (348,000–753,000) — at the b cap after a curtailment — EPLEY-MARTIN 31E and
+  DAVIS-LACY 31I.
 - **Economic limits run 108–137 bbl/mo** (median 130, ~4 BOPD): wells with more gas per
-  barrel stay economic to lower oil rates. Forecast lives run 2–38 years (median 28).
+  barrel stay economic to lower oil rates. Forecast lives run 2.6–38 years (median 28).
 - **PDP PV10 $139 MM** for the 30 wells at the base case (median well $4.7 MM, range
   $0.6–9.4 MM; undiscounted net cash flow $230 MM). PV10 moves about 26% for a $15/bbl
   oil price change while EUR barely moves (the limit shifts, the decline does not).
+  Seven wells reach their limit within 20 years; leaving out plugging and abandonment
+  (~$150k a well) overstates PV10 by about 0.5% for the cohort but by 20% and 13% for
+  the two shortest-lived, DAVIS-LACY 31D and 31H.
 - **Shut-in oil prices are low: median $2.28/bbl**, and negative for 6 wells, whose gas
   revenue at $2/mcf and a GOR of up to 10 mcf/bbl already covers their operating cost
   at today's rate. At $0 gas the economic limit rises to a median 145 bbl/mo and PV10
-  falls 11%.
-- 27 of 30 wells have at least one month after peak under 50% of their first-pass
-  trend (median downtime 1.5 months; the most is WELCH-COX E39V, 6.4 months). Eight have
-  3+ such months, among them EPLEY-MARTIN 31E: its 2023 dip (down to 271 bbl) is read
-  as downtime and the rebound to ~12,000 bbl/mo as the well resuming its trend, which
-  gives b 0.98 and 673,000 bbl instead of the capped b 1.2 and 748,000 bbl a single
-  calendar-time curve gives under the same assumptions. If that rebound was a
+  falls 11.5%.
+- 26 of 30 wells have at least one month after peak under 50% of their first-pass
+  trend (median downtime 1.5 months; the most is WELCH-COX E39V, 6.6 months). In all,
+  126 producing months get a fit weight under 1 (under 70% of trend), 55 of them under
+  0.5 (under 50%). Nine wells have 3+ months under 50%, among them EPLEY-MARTIN 31E: its
+  2023 dip (down to 271 bbl) is read as downtime and the rebound to ~12,000 bbl/mo as
+  the well resuming its trend, which gives b 0.95 and 663,000 bbl instead of the capped
+  b 1.2 and 748,000 bbl a single calendar-time curve gives under the same assumptions. If that rebound was a
   re-completion, a restart-segment forecast would be better.
 - Mean fit R² **0.92** (median 0.95) over the months each well was fitted on; all 30
-  wells have R² > 0.6 in linear space and 29 in log space.
-- **5 of 30 wells are low-confidence:** WELCH-COX E39V (#5 by EUR) and DAVIS-LACY 31D
+  wells have R² > 0.6 in both linear and log space.
+- **4 of 30 wells are low-confidence:** WELCH-COX E39V (#5 by EUR) and DAVIS-LACY 31D
   (#28) end the record shut in or curtailed (E39V for its last two months, 31D at
   ~80 bbl/mo for three) and are forecast as returning to trend — confirm their status
   before relying on their remaining volumes; 31D also has b on the 0.05 floor and a
-  forecast starting at 2.03× its recent rate. BOHANAN-BLOCKER 3B's (#7) forecast starts
-  at 0.70× its recent rate (its last six reported months ran above its fitted trend).
-  GLYNN-ATCHISON 44M (#25) has a log-space R² of 0.60 at the b cap, and DAVIS-LACY 31H
-  (#30) has b on the 0.05 floor.
+  forecast starting at 2.04× its recent rate. BOHANAN-BLOCKER 3B's (#6) forecast starts
+  at 0.71× its recent rate (its last six reported months ran above its fitted trend).
+  DAVIS-LACY 31H (#30) has b on the 0.05 floor.
 - No forecast reaches the 50-year life cap under the base case.
-- Two decline-shape clusters. k=2 is chosen by silhouette (0.58 vs 0.49 for k=3) and
-  is fairly stable under bootstrap resampling (adjusted Rand index 0.84):
+- Two decline-shape clusters. k=2 is chosen by silhouette (0.55 vs 0.51 for k=3) and
+  is fairly stable under bootstrap resampling (adjusted Rand index 0.83):
 
   | Cluster | Wells | Peak rate kept after 1 yr / 3 yr | Mean b | Mean Di (nom.) | Mean EUR (bbl) | Mean EUR / 1,000 ft |
   |---|---|---|---|---|---|---|
-  | Steep decline | 14 | 18% / 6% | 0.89 | 453%/yr | 488,000 | 49,000 |
-  | Shallow decline | 16 | 33% / 12% | 0.84 | 211%/yr | 512,000 | 51,000 |
+  | Steep decline | 14 | 18% / 6% | 0.89 | 453%/yr | 489,000 | 49,000 |
+  | Shallow decline | 16 | 33% / 12% | 0.85 | 211%/yr | 511,000 | 51,000 |
 
   The two clusters have about the same mean b; what separates them is how fast the
-  first years decline. The steep cluster holds 2 low-confidence wells, the shallow 3.
-  The shallow cluster's 5% higher mean EUR is not statistically significant (Mann-Whitney
-  p ≈ 0.8).
+  first years decline. Each cluster holds 2 low-confidence wells. The shallow
+  cluster's 5% higher mean EUR is not statistically significant (Mann-Whitney
+  p ≈ 0.7).
 
 ### Forecast and economic assumptions
 
@@ -318,19 +345,19 @@ sliders (the static Vercel page shows the base case).
 
 | Case | Median econ. limit (bbl/mo) | Mean EUR (bbl) | Median EUR (bbl) | EUR vs base | Total PV10 ($MM) | PV10 vs base |
 |---|---|---|---|---|---|---|
-| Base case | 130 | 501,000 | 502,000 | +0.0% | 138.8 | +0.0% |
-| Oil $50/bbl | 169 | 496,000 | 496,000 | -1.0% | 102.9 | -25.8% |
-| Oil $80/bbl | 106 | 504,000 | 505,000 | +0.6% | 174.8 | +25.9% |
-| Gas $0/mcf | 145 | 499,000 | 499,000 | -0.4% | 122.9 | -11.4% |
-| Fixed LOE +50% ($9,000/mo) | 196 | 492,000 | 492,000 | -1.7% | 129.5 | -6.7% |
-| Flatter tail (Dmin 5%) | 130 | 534,000 | 518,000 | +6.6% | 141.8 | +2.2% |
-| Steeper tail (Dmin 10%) | 130 | 483,000 | 494,000 | -3.5% | 135.8 | -2.2% |
-| 30-year well life | 130 | 493,000 | 502,000 | -1.6% | 138.6 | -0.1% |
-| Source dataset's QC assumptions (fixed 250 bbl/mo) | 250 | 473,000 | 480,000 | -5.5% | 135.4 | -2.4% |
-| b cap 1.0 | 130 | 484,000 | 502,000 | -3.4% | 129.8 | -6.5% |
-| b cap 1.5 (previous) | 130 | 512,000 | 502,000 | +2.2% | 144.8 | +4.4% |
-| b cap 2.0 (first version's bound) | 130 | 518,000 | 502,000 | +3.4% | 148.1 | +6.7% |
-| No b cap (b ≤ 5) | 130 | 521,000 | 502,000 | +4.1% | 150.2 | +8.2% |
+| Base case | 130 | 501,000 | 501,000 | +0.0% | 138.9 | +0.0% |
+| Oil $50/bbl | 169 | 496,000 | 496,000 | -1.0% | 103.0 | -25.8% |
+| Oil $80/bbl | 106 | 504,000 | 504,000 | +0.6% | 174.9 | +25.9% |
+| Gas $0/mcf | 145 | 499,000 | 498,000 | -0.4% | 123.0 | -11.5% |
+| Fixed LOE +50% ($9,000/mo) | 196 | 492,000 | 492,000 | -1.7% | 129.6 | -6.7% |
+| Flatter tail (Dmin 5%) | 130 | 534,000 | 518,000 | +6.6% | 141.9 | +2.2% |
+| Steeper tail (Dmin 10%) | 130 | 483,000 | 494,000 | -3.5% | 135.9 | -2.2% |
+| 30-year well life | 130 | 493,000 | 501,000 | -1.5% | 138.7 | -0.1% |
+| Source dataset's QC assumptions (fixed 250 bbl/mo) | 250 | 473,000 | 480,000 | -5.5% | 135.5 | -2.4% |
+| b cap 1.0 | 130 | 484,000 | 501,000 | -3.4% | 129.8 | -6.6% |
+| b cap 1.5 (previous) | 130 | 512,000 | 501,000 | +2.2% | 144.9 | +4.3% |
+| b cap 2.0 (first version's bound) | 130 | 517,000 | 501,000 | +3.3% | 148.0 | +6.5% |
+| No b cap (b ≤ 5) | 130 | 521,000 | 501,000 | +4.0% | 150.0 | +8.0% |
 
 The cohort is insensitive to the economic assumptions in volume (the economic limit sits
 far below today's rates) and sensitive in value; Dmin and the b cap move the tail.
@@ -356,7 +383,8 @@ far below today's rates) and sensitive in value; Dmin and the b cap move the tai
   may be one) would be better forecast from the restart alone, which needs the
   operator's confirmation.
 - The economics are PDP only, flat-price, 100% WI, with no capital, workovers,
-  abandonment or hedges; the gas forecast is the oil forecast times a flat GOR.
+  abandonment or hedges (abandonment matters for the shortest-lived wells, see
+  *Findings*); the gas forecast is the oil forecast times a flat GOR.
 
 ## Run it locally
 
@@ -370,7 +398,8 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
-# Fit, forecast, value and cluster all wells (~20 s). Writes
+# Fit, forecast, value and cluster all wells (~30 s on 4 cores: 1,000 bootstrap
+# refits per well, wells in parallel). Writes
 # results/midland_basin_dca_results.csv, observed_type_curve.csv, forecast_ensemble.csv
 python -m src.pipeline
 
@@ -380,9 +409,9 @@ streamlit run app.py
 
 Then open http://localhost:8501.
 
-- Tests: `pip install -r requirements-dev.txt && pytest` (~30 s).
+- Tests: `pip install -r requirements-dev.txt && pytest` (~45 s).
 - Hindcast of the fitting method and b cap: `python scripts/backtest.py`.
-- Calibration check of the P90–P10 ranges: `python scripts/calibrate_ranges.py` (~1 min).
+- Calibration check of the P90–P10 ranges: `python scripts/calibrate_ranges.py` (~2 min).
 - Sensitivity to prices, costs and decline assumptions: `python scripts/sensitivity.py`.
 
 `pyproject.toml` holds the project metadata, the supported Python versions and the pytest
@@ -396,10 +425,15 @@ Streamlit Community Cloud installs from.
 - **Tests** on Python 3.12 and 3.13.
 - **Committed outputs are current** — rebuilds `results/` and `public/` with
   `scripts/build_static.py` and compares them with the committed copies
-  (`scripts/check_outputs.py`): same files, columns and rows, identical text, numbers
-  equal to a relative 1e-6 (a rebuild on another machine can differ in the last digits
-  of fitted values; that is not staleness). If it fails, run
-  `python scripts/build_static.py` and commit `results/` and `public/`.
+  (`scripts/check_outputs.py`): same files, columns and rows; numbers equal to a
+  relative 1e-5, or 1e-3 for values computed from the bootstrap ensemble (its members,
+  P90/P10, the chart band), with Plotly's base64 chart arrays decoded and compared as
+  numbers; text identical except that a displayed number may differ by one rounding
+  step. A rebuild on another machine differs in the last digits — one with the vector
+  math of a CPU without AVX-512, like GitHub's runners, differed from an AVX-512 build
+  by at most 3e-7 in deterministic values and 8e-5 in ensemble members — which is not
+  staleness, while a 0.001 change in the level factor moves P90/P10 by ~4e-3. If it
+  fails, run `python scripts/build_static.py` and commit `results/` and `public/`.
 
 ## Deploy free on Streamlit Cloud
 
@@ -444,7 +478,7 @@ midland-basin-dca-dashboard/
 │   └── martin_real_cohort_analysis_qc.json                   # upstream artifact, unused (see Known data issues)
 ├── results/
 │   ├── midland_basin_dca_results.csv   # pipeline output: fits, EUR P90/P50/P10, PV10, QC flags, clusters
-│   ├── forecast_ensemble.csv           # 200 Arps curves per well behind P90/P10
+│   ├── forecast_ensemble.csv           # 1,000 Arps curves per well behind P90/P10
 │   └── observed_type_curve.csv         # P25/P50/P75 by month on production
 ├── public/                # static Vercel build (generated)
 ├── scripts/

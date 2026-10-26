@@ -24,6 +24,7 @@ import os
 import sys
 
 import numpy as np
+from joblib import Parallel, delayed
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -37,32 +38,35 @@ LEVEL = 0.8
 GRID = np.arange(0.0, 0.8001, 0.0025)
 
 
-def windows(prod):
-    """(api8, H, fit volume, member volumes, member z, actual volume) per window."""
+def well_windows(api8, w) -> list:
+    """(api8, H, fit volume, member volumes, member z, actual volume) per holdout."""
     out = []
-    for api8, w in prod.groupby("api8"):
-        for h in HOLDOUTS:
-            cut = w["month_on_production"].max() - h
-            series = fitting_series(w[w["month_on_production"] <= cut], api8)
-            test = w[(w["month_on_production"] > cut) & (w["oil_bbl"] > 0)]
-            if not len(series) or test.empty:
-                continue
-            q = series["oil_bbl"].to_numpy(float)
-            qi_max = float(q.max())
-            fit, clock, weight = fit_decline(q, qi_max=qi_max, b_cap=B_CAP)
-            if fit["status"] != "ok":
-                continue
-            # Same sequence of draws as uncertainty.ensemble: bootstrap, then level factors.
-            rng = np.random.default_rng([int(api8), h])
-            params = uncertainty.bootstrap_fits(q, clock, weight, fit, qi_max, B_CAP, rng)
-            z = np.log(uncertainty.level_factors(len(params), rng, sigma=1.0))
-            t = fit["producing_months"] + (test["month_on_production"] - (cut + 1)).to_numpy(float)
-            dmin = DMIN_ANNUAL / 12
-            vol = terminal_rate(t[None, :], params[:, :1], params[:, 1:2], params[:, 2:3],
-                                dmin).sum(axis=1)
-            det = float(terminal_rate(t, fit["qi"], fit["Di_monthly"], fit["b"], dmin).sum())
-            out.append((int(api8), h, det, vol, z, float(test["oil_bbl"].sum())))
+    for h in HOLDOUTS:
+        cut = w["month_on_production"].max() - h
+        series = fitting_series(w[w["month_on_production"] <= cut], api8)
+        test = w[(w["month_on_production"] > cut) & (w["oil_bbl"] > 0)]
+        if not len(series) or test.empty:
+            continue
+        q = series["oil_bbl"].to_numpy(float)
+        qi_max = float(q.max())
+        fit, clock, weight = fit_decline(q, qi_max=qi_max, b_cap=B_CAP)
+        if fit["status"] != "ok":
+            continue
+        # The same members and level-factor scores uncertainty.ensemble uses.
+        params, z = uncertainty.members(q, clock, weight, fit, qi_max, B_CAP,
+                                        seed=[int(api8), h])
+        t = fit["producing_months"] + (test["month_on_production"] - (cut + 1)).to_numpy(float)
+        dmin = DMIN_ANNUAL / 12
+        vol = terminal_rate(t[None, :], params[:, :1], params[:, 1:2], params[:, 2:3],
+                            dmin).sum(axis=1)
+        det = float(terminal_rate(t, fit["qi"], fit["Di_monthly"], fit["b"], dmin).sum())
+        out.append((int(api8), h, det, vol, z, float(test["oil_bbl"].sum())))
     return out
+
+
+def windows(prod) -> list:
+    per_well = Parallel(n_jobs=-1)(delayed(well_windows)(a, w) for a, w in prod.groupby("api8"))
+    return [win for wells in per_well for win in wells]
 
 
 def interval(det, vol, z, sigma):
@@ -104,8 +108,9 @@ def main() -> None:
         lo, hi = interval(det, vol, z, loo_sigma[i])
         lo0, hi0 = interval(det, vol, z, 0.0)
         blo, bhi = det * np.exp(-loo_k[i]), det * np.exp(loo_k[i])
+        median = np.median(vol * np.exp(loo_sigma[i] * z))
         rows.append((h, lo <= y <= hi, hi / lo, interval_score(lo, hi, y), lo0 <= y <= hi0,
-                     blo <= y <= bhi, interval_score(blo, bhi, y)))
+                     blo <= y <= bhi, interval_score(blo, bhi, y), y < det, y < median))
     rows = np.array(rows, dtype=float)
 
     print(f"Calibrated level sigma: {sigma:.3f} (src/uncertainty.py LEVEL_SIGMA = "
@@ -122,6 +127,11 @@ def main() -> None:
         print(f"| {label} | {int(m.sum())} | {r[:, 1].mean():.0%} | {r[:, 2].mean():.2f} "
               f"| {r[:, 4].mean():.0%} | {r[:, 5].mean():.0%} "
               f"| {r[:, 3].mean():.3f} / {r[:, 6].mean():.3f} |")
+    # Which is the better middle of the range: P50 (the fit) or the ensemble median?
+    below_fit, below_median = int(rows[:, 7].sum()), int(rows[:, 8].sum())
+    print(f"\nHeld-out volume below P50 (the fit) in {below_fit}/{len(rows)} windows "
+          f"({below_fit / len(rows):.0%}), below the ensemble median in {below_median}/{len(rows)} "
+          f"({below_median / len(rows):.0%}).")
 
 
 if __name__ == "__main__":

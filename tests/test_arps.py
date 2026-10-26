@@ -11,6 +11,7 @@ from src.arps import (
     fit_hyperbolic,
     forecast_to_limit,
     hyperbolic_rate,
+    local_reference,
     month_weights,
     months_above,
     terminal_rate,
@@ -248,3 +249,30 @@ def test_forecast_matches_a_month_by_month_loop():
 def test_months_above_stops_at_the_first_month_below():
     assert months_above(np.array([5.0, 4.0, 2.0, 6.0]), 3.0) == 2
     np.testing.assert_array_equal(months_above(np.array([[5.0, 1.0], [5.0, 5.0]]), 3.0), [1, 2])
+
+
+def test_local_reference_is_the_median_of_the_neighbouring_months():
+    q = np.array([1000.0, 900.0, 800.0, 0.0, 700.0, 650.0, 600.0, 2.0])
+    ref = local_reference(q)
+    assert ref[0] == pytest.approx(np.median([900.0, 800.0, 0.0]))
+    assert ref[4] == pytest.approx(np.median([900.0, 800.0, 0.0, 650.0, 600.0, 2.0]))
+    assert local_reference(np.array([1000.0, 0.0, 0.0, 0.0, 0.0]))[2] == pytest.approx(10.0)
+
+
+def test_a_month_of_a_few_barrels_counts_like_a_zero_month():
+    # The first pass used to count any positive month as a full producing month
+    # at full weight, so 1 bbl instead of 0 moved EUR by 2-4% on real wells.
+    rng = np.random.default_rng(3)
+    t = np.arange(0, 36, dtype=float)
+    q = hyperbolic_rate(t, 25000.0, 0.3, 0.9) * np.exp(rng.normal(0, 0.12, len(t)))
+    q[[20, 21, 27]] = 0.0
+    def eur(series):
+        fit, _, _ = fit_decline(series, qi_max=series.max())
+        return eur_bbl(fit["qi"], fit["Di_monthly"], fit["b"], series.sum(), DMIN, 150.0,
+                       start_t=fit["producing_months"])["eur_bbl"]
+    base = eur(q)
+    for k in (20, 27):
+        for few in (1.0, 10.0):
+            qq = q.copy()
+            qq[k] = few
+            assert eur(qq) == pytest.approx(base + few, rel=1e-3)

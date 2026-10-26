@@ -182,6 +182,25 @@ def test_ensembles_are_reproducible_and_saved(results, ensembles):
     np.testing.assert_allclose(again, ensembles[api8], rtol=1e-12)
 
 
+def test_p50_sits_near_the_ensemble_median_for_wells_off_the_b_bounds(results, ensembles):
+    # Resampling curtailed months' residuals used to put 59% of members below
+    # P50 on average (up to 73%). A well whose b is on a bound can only scatter
+    # one way, so it is left out.
+    dmin = pipeline.DMIN_ANNUAL / 12
+    shares = []
+    for _, row in results.iterrows():
+        if row["b_at_cap"] or "b" in row["bounds_hit"]:
+            continue
+        months = int(row["forecast_month_cap"])
+        rates = uncertainty.ensemble_rates(ensembles[int(row["api8"])], row["producing_months"],
+                                           months, dmin)
+        alive = np.cumprod(rates >= row["econ_limit_bpm"], axis=1).astype(bool)
+        shares.append((np.where(alive, rates, 0.0).sum(axis=1) < row["remaining_bbl"]).mean())
+    assert len(shares) >= 15
+    assert 0.4 <= min(shares) and max(shares) <= 0.65
+    assert np.mean(shares) < 0.56
+
+
 def test_forecast_stops_at_each_wells_economic_limit_and_pv_matches(results, prod):
     for _, row in results.iterrows():
         fig = well_figure(prod, row)
@@ -232,7 +251,7 @@ def test_restart_wells_no_longer_get_flat_tails(results, prod):
     cal = fit_hyperbolic(s["t"].to_numpy(float), s["oil_bbl"].to_numpy(),
                          qi_max=s["oil_bbl"].max())
     assert cal["b_at_cap"] and e["b"] < cal["b"] - 0.15
-    assert e["curtailed_months"] >= 5 and "down-weighted in the fit" in e["qc_flags"]
+    assert e["curtailed_months"] >= 5 and "under half weight in the fit" in e["qc_flags"]
     # DAVIS-LACY 31K (b 2.0 on the old bound, 776k): still wants b above the cap.
     k = r.loc[31744055]
     assert k["b_at_cap"] and k["eur_bbl"] < 700_000 and "b held at the 1.2 cap" in k["qc_flags"]

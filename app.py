@@ -17,8 +17,8 @@ from src.figures import cluster_figure, type_curve_figure, well_figure
 from src.pipeline import (DMIN_ANNUAL, ECONOMICS, ENSEMBLE_CSV, MAX_LIFE_MONTHS,
                           RESULTS_CSV, load_ensemble, load_results)
 from src.pipeline import run as run_pipeline
-from src.report import (CLUSTER_NOTE, RANGE_NOTE, RANKING, caption, cohort_metrics,
-                        data_note, econ_limit_text, economics_note, methodology,
+from src.report import (CLUSTER_NOTE, RANGE_NOTE, caption, cohort_metrics, data_note,
+                        econ_limit_text, economics_note, methodology, ranking_kinds,
                         ranking_table, well_detail, well_label, well_metrics, well_ranges)
 from src.type_curve import observed_type_curve
 
@@ -165,10 +165,11 @@ with tab_cohort:
     st.subheader("EUR ranking")
     formats = {"int": "%d", "b": "%.2f", "pct": "%.0f%%", "mbbl": "%,.0f", "mbbl1": "%,.1f",
                "usdmm": "%,.1f", "price": "%,.2f", "r2": "%.3f"}
+    ranking = ranking_table(ok)  # PV column names follow the discount rate
     st.dataframe(
-        ranking_table(ok), width="stretch", hide_index=True,
+        ranking, width="stretch", hide_index=True,
         column_config={name: NUM(format=formats[kind])
-                       for name, _, kind in RANKING if kind in formats})
+                       for name, kind in ranking_kinds(ranking).items() if kind in formats})
     st.caption(md("Mbbl = thousand barrels, $MM = million dollars; forecast volumes are "
                   "rounded to the nearest thousand barrels. " + economics_note(results)))
     st.download_button(

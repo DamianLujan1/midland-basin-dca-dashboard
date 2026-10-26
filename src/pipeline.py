@@ -12,6 +12,7 @@ import sys
 
 import numpy as np
 import pandas as pd
+from joblib import Parallel, delayed
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -62,6 +63,7 @@ FIT_COLS = {"qi": np.nan, "Di_monthly": np.nan, "Di_annual": np.nan, "b": np.nan
             "r_squared": np.nan, "r_squared_log": np.nan, "n_partial_months": 0,
             "bounds_hit": "", "b_at_cap": False, "producing_months": np.nan,
             "downtime_months": np.nan, "curtailed_months": 0, "curtailed_months_at_end": 0,
+            "downweighted_months": 0,
             **{f"retention_{m}mo": np.nan for m in RETENTION_MONTHS}}
 NO_FORECAST = {"eur_bbl": np.nan, "remaining_bbl": np.nan, "forecast_months": 0,
                "forecast_capped": False, "forecast_vs_recent": np.nan, "pv10_usd": np.nan,
@@ -86,7 +88,7 @@ def _qc_flags(row: dict, max_life_months: int) -> str:
         flags.append(f"b held at the {row['b_cap']} cap")
     if row["curtailed_months"] >= CURTAILED_MONTHS_NOTE:
         flags.append(f"{row['curtailed_months']} months under {CURTAIL_RATIO:.0%} of trend "
-                     "read as partly shut in and down-weighted in the fit")
+                     "read as mostly shut in and given under half weight in the fit")
     if row["curtailed_months_at_end"]:
         flags.append(f"last {row['curtailed_months_at_end']} reported mo shut in or under "
                      f"{CURTAIL_RATIO:.0%} of trend; forecast assumes a return to trend, "
@@ -106,6 +108,15 @@ def _low_confidence(row: dict) -> bool:
                 or row["bounds_hit"]
                 or ratio > FORECAST_JUMP_FACTOR or ratio < 1 / FORECAST_JUMP_FACTOR
                 or row["curtailed_months_at_end"] >= CURTAILED_AT_END_LOW_CONFIDENCE)
+
+
+def _ensemble(q: np.ndarray, b_cap: float, seed: int) -> np.ndarray | None:
+    """One well's forecast ensemble (None if the well does not fit)."""
+    qi_max = float(q.max()) if len(q) else None
+    fit, clock, weight = fit_decline(q, qi_max=qi_max, b_cap=b_cap)
+    if fit["status"] != "ok":
+        return None
+    return uncertainty.ensemble(q, clock, weight, fit, qi_max, b_cap, seed=seed)
 
 
 def run(dmin_annual: float = DMIN_ANNUAL,
@@ -132,6 +143,13 @@ def run(dmin_annual: float = DMIN_ANNUAL,
     dmin_m = dmin_annual / 12.0
     ensembles = dict(ensembles or {})
     computed = {}
+    if ranges:  # the bootstrap refits are most of the run time: one process per core
+        missing = [int(a) for a in sorted(prod["api8"].unique()) if int(a) not in ensembles]
+        fitted = Parallel(n_jobs=-1)(
+            delayed(_ensemble)(fitting_series(prod, a)["oil_bbl"].to_numpy(), b_cap, a)
+            for a in missing)
+        computed = {a: p for a, p in zip(missing, fitted) if p is not None}
+        ensembles.update(computed)
 
     rows = []
     for api8 in sorted(prod["api8"].unique()):
@@ -200,9 +218,6 @@ def run(dmin_annual: float = DMIN_ANNUAL,
                 row[f"retention_{m}mo"] = float(
                     retention(fit["qi"], fit["Di_monthly"], fit["b"], m))
             if ranges:
-                if int(api8) not in ensembles:
-                    computed[int(api8)] = ensembles[int(api8)] = uncertainty.ensemble(
-                        q, clock, weight, fit, qi_max, b_cap, seed=int(api8))
                 r = uncertainty.ranges(ensembles[int(api8)], start_t, cap, dmin_m, limit,
                                        economics, gor)
                 rem, pv = row["remaining_bbl"], row["pv10_usd"]

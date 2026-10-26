@@ -20,6 +20,7 @@ decline rates unless suffixed _annual.
 from __future__ import annotations
 
 import numpy as np
+from numpy.lib.stride_tricks import sliding_window_view
 from scipy.optimize import curve_fit
 
 # Fit bounds: (log qi, Di monthly nominal, b). qi's upper bound is set per fit.
@@ -41,6 +42,12 @@ B_BOUNDS = (B_MIN, B_CAP)
 LOSS = "soft_l1"
 F_SCALE = 0.3
 
+# Solver tolerances (curve_fit's ftol, xtol and gtol). At the default 1e-8 the
+# fit stops with parameters settled only to ~1e-4 along flat directions of the
+# cost, so the same data could fit differently in the 4th digit on another
+# CPU; at 1e-12 results agree to ~1e-6 or better.
+FIT_TOL = 1e-12
+
 MAX_FORECAST_MONTHS = 600  # default cap on forecast length
 
 # A month producing under 10% of the fitted rate is a partial month (restart,
@@ -49,17 +56,22 @@ MAX_FORECAST_MONTHS = 600  # default cap on forecast length
 PARTIAL_MONTH_RATIO = 0.10
 
 # Producing-time clock. Monthly volumes carry no days-on, so how much of a
-# month a well produced is read from its ratio r = q / q_trend to a first fit's
-# trend (see fit_decline). Under CURTAIL_RAMP[0] the month is taken to have
-# produced at trend for r of the month, and its volume says nothing more about
-# the trend, so it is left out of the second fit; over CURTAIL_RAMP[1] it is a
-# full month (the shortfall is noise); in between, its clock share rises
-# linearly from CURTAIL_RAMP[0] to 1 and its fit weight from 0 to 1. No month
-# flips from in to out at a threshold, so a small change in one month's volume
-# makes a small change in the fit. CURTAIL_RATIO, the ramp's midpoint, is the
-# threshold the QC counts of curtailed months use.
+# month a well produced is read from its ratio r = q / reference (see
+# fit_decline). Under CURTAIL_RAMP[0] the month is taken to have produced at
+# trend for r of the month, and its volume says nothing more about the trend,
+# so it is left out of the fit; over CURTAIL_RAMP[1] it is a full month (the
+# shortfall is noise); in between, its clock share rises linearly from
+# CURTAIL_RAMP[0] to 1 and its fit weight from 0 to 1. No month flips from in
+# to out at a threshold -- a month of a few barrels counts almost exactly like
+# a zero month -- so a small change in one month's volume makes a small change
+# in the fit. CURTAIL_RATIO, the ramp's midpoint, is the threshold the QC
+# counts of curtailed months use.
 CURTAIL_RAMP = (0.3, 0.7)
 CURTAIL_RATIO = 0.5
+# The first pass's reference: the median of the REF_HALF_WINDOW months either
+# side (zeros included), floored at REF_FLOOR of the peak month.
+REF_HALF_WINDOW = 3
+REF_FLOOR = 0.01
 
 
 # ----------------------------------------------------------------------------
@@ -138,7 +150,7 @@ def fit_hyperbolic(
     try:
         popt, _ = curve_fit(
             model_log, t, log_q, p0=p0, bounds=(lower, upper), maxfev=20000,
-            loss=LOSS, f_scale=F_SCALE,
+            loss=LOSS, f_scale=F_SCALE, ftol=FIT_TOL, xtol=FIT_TOL, gtol=FIT_TOL,
             sigma=None if np.all(w == 1.0) else 1.0 / np.sqrt(w),
         )
         qi, Di, b = float(np.exp(popt[0])), float(popt[1]), float(popt[2])
@@ -183,15 +195,29 @@ def fit_hyperbolic(
     }
 
 
-def month_weights(q: np.ndarray, q_trend: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def month_weights(q: np.ndarray, q_ref: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Producing fraction (clock share) and fit weight of each month from its
-    ratio to the trend; see CURTAIL_RAMP."""
+    ratio to a reference rate; see CURTAIL_RAMP."""
     q = np.asarray(q, dtype=float)
     lo, hi = CURTAIL_RAMP
-    ratio = np.where(q > 0, q / q_trend, 0.0)
+    ratio = np.where(q > 0, q / q_ref, 0.0)
     weight = np.clip((ratio - lo) / (hi - lo), 0.0, 1.0)
     frac = np.where(ratio <= lo, ratio, lo + (1.0 - lo) * weight)
     return frac, weight
+
+
+def local_reference(q: np.ndarray) -> np.ndarray:
+    """Each month's first-pass reference rate: the median of its neighbouring
+    months (REF_HALF_WINDOW either side, zeros included), floored at REF_FLOOR
+    of the peak. It depends on no fit and moves continuously with every
+    month's volume."""
+    q = np.asarray(q, dtype=float)
+    if len(q) < 2:
+        return q.copy()
+    w = REF_HALF_WINDOW
+    win = sliding_window_view(np.pad(q, w, constant_values=np.nan), 2 * w + 1)
+    ref = np.nanmedian(np.delete(win, w, axis=1), axis=1)
+    return np.maximum(ref, REF_FLOOR * q.max())
 
 
 def _clock(frac: np.ndarray) -> np.ndarray:
@@ -204,25 +230,27 @@ def fit_decline(q: np.ndarray, qi_max: float | None = None,
     """Fit a well on producing time, in two passes.
 
     q holds one monthly volume per calendar month from the peak month onward,
-    zeros included (shut-in months). The first pass counts zero months as
-    downtime and fits every producing month. Each month's ratio to that fit's
-    trend then sets its clock share and fit weight (month_weights), and the
-    second pass fits on that clock with those weights. Two fixed passes rather
-    than iterating to a self-consistent clock: iterating can have two
+    zeros included (shut-in months). Each pass reads every month's clock share
+    and fit weight from its ratio to a reference rate (month_weights) and fits
+    on that clock with those weights. The first pass's reference is the median
+    of the neighbouring months (local_reference), which needs no fit; the
+    second pass's is the first fit's trend. Two fixed passes rather than
+    iterating to a self-consistent clock: iterating can have two
     self-consistent answers for the same data, and which one it reached could
     flip on a small change in one month.
 
     Returns the fit (fit_hyperbolic's dict plus producing_months -- producing
     time at the first forecast month, i.e. its start_t --, downtime_months,
     curtailed_months and curtailed_months_at_end, counted against the first
-    pass's trend at CURTAIL_RATIO), the producing time at the start of each
-    history month, and each month's fit weight.
+    pass's trend at CURTAIL_RATIO, and downweighted_months, the producing
+    months the second fit gives a weight under 1), the producing time at the
+    start of each history month, and each month's fit weight.
     """
     q = np.asarray(q, dtype=float)
     producing = q > 0
-    frac = weight = producing.astype(float)
+    frac, weight = month_weights(q, local_reference(q))
     clock = _clock(frac)
-    first = fit_hyperbolic(clock, q, qi_max=qi_max, b_cap=b_cap)
+    first = fit_hyperbolic(clock, q, qi_max=qi_max, b_cap=b_cap, weights=weight)
     if first["status"] != "ok":
         return first, clock, weight
 
@@ -241,6 +269,7 @@ def fit_decline(q: np.ndarray, qi_max: float | None = None,
     fit["producing_months"] = float(frac.sum())
     fit["downtime_months"] = float(len(q) - frac.sum())
     fit["curtailed_months"] = int((producing & curtailed).sum())
+    fit["downweighted_months"] = int((producing & (weight < 1)).sum())
     fit["curtailed_months_at_end"] = (int(np.argmin(curtailed[::-1])) if not curtailed.all()
                                       else len(q))
     return fit, clock, weight

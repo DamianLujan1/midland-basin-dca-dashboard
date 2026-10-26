@@ -12,7 +12,9 @@ from html import escape
 import numpy as np
 import pandas as pd
 
+from src.arps import B_CAP
 from src.economics import Economics
+from src.uncertainty import BOOT_SAMPLES
 
 CLUSTER_NOTE = (
     "Wells grouped by decline shape: how much of its peak rate each well's fitted decline "
@@ -56,6 +58,13 @@ def usd_mm_range(lo, hi) -> str:
 def price(v) -> str:
     """$/bbl with cents; '−$1.20/bbl' when negative."""
     return "—" if pd.isna(v) else ("−" if v < 0 else "") + f"${abs(float(v)):,.2f}/bbl"
+
+
+def pv_label(rate) -> str:
+    """'PV10' for a 10%/yr discount rate, 'PV20' for 20%, 'PV7.5' for 7.5%. Labels
+    take the rate the results were discounted at (column econ_discount); rounding
+    keeps 0.1 * 100 = 10.000000000000002 from showing."""
+    return f"PV{round(float(rate) * 100, 4):g}"
 
 
 def _month(yyyymm) -> str:
@@ -120,7 +129,7 @@ def data_note(results: pd.DataFrame, html: bool = False) -> str:
 
 
 def economics_note(results: pd.DataFrame) -> str:
-    """One line on the price deck and costs behind PV10 and the economic limit."""
+    """One line on the price deck and costs behind the PV and the economic limit."""
     e = economics_of(results)
     return (f"PDP economics, flat prices: ${e.oil_price:,.0f}/bbl oil, ${e.gas_price:,.2f}/mcf "
             f"casinghead gas at each well's last-12-month GOR; {e.nri:.1%} NRI, 100% WI; "
@@ -132,9 +141,11 @@ def economics_note(results: pd.DataFrame) -> str:
 
 RANGE_NOTE = (
     "P50 is the fitted forecast. P90 and P10 are the 10th and 90th percentiles of a "
-    "200-member ensemble (block bootstrap of the fit plus a level factor), calibrated so "
-    "80% of held-out 6–18 month volumes fell inside the range in a leave-one-well-out "
-    "hindcast. Beyond 18 months the range is the model's extrapolation.")
+    f"{BOOT_SAMPLES:,}-member ensemble (block bootstrap of the fit plus a level factor), "
+    "calibrated so 80% of held-out 6–18 month volumes fell inside the range in a "
+    "leave-one-well-out hindcast. Beyond 18 months the range is the model's extrapolation. "
+    f"For wells with b held at the {B_CAP:g} cap the range is skewed low: members can "
+    "only have lower b, so b adds no upside.")
 
 
 def methodology(results: pd.DataFrame) -> str:
@@ -159,18 +170,19 @@ def well_metrics(row) -> dict:
     return {
         "EUR (P50)": bbl(row["eur_bbl"]),
         "Remaining (P50)": bbl(row["remaining_bbl"]),
-        "PV10 (P50)": usd_mm(row["pv10_usd"]),
+        f"{pv_label(row['econ_discount'])} (P50)": usd_mm(row["pv10_usd"]),
         "b-factor": fmt(row["b"], ".2f"),
         "Fit R²": fmt(row["r_squared"], ".3f"),
     }
 
 
 def well_ranges(row) -> dict:
-    """P90–P10 ranges shown under the well metrics."""
+    """P90–P10 ranges shown under the well metrics, keyed like well_metrics."""
     return {
         "EUR (P50)": bbl_range(row["eur_p90_bbl"], row["eur_p10_bbl"]),
         "Remaining (P50)": bbl_range(row["remaining_p90_bbl"], row["remaining_p10_bbl"]),
-        "PV10 (P50)": usd_mm_range(row["pv10_p90_usd"], row["pv10_p10_usd"]),
+        f"{pv_label(row['econ_discount'])} (P50)": usd_mm_range(row["pv10_p90_usd"],
+                                                                row["pv10_p10_usd"]),
     }
 
 
@@ -187,7 +199,9 @@ def well_detail(row) -> dict:
         "Last reported month": _month(row["last_reported"]),
         "History (mo)": str(int(row["months_history"])),
         "Downtime since peak (mo)": fmt(row["downtime_months"], ".1f"),
-        "Months under 50% of trend (down-weighted)": fmt(row["curtailed_months"], ".0f"),
+        "Months down-weighted in the fit (under 70% of trend)": (
+            f"{row['downweighted_months']:.0f} ({row['curtailed_months']:.0f} under 50%)"
+            if pd.notna(row.get("downweighted_months")) else "—"),
         "Cum oil (bbl)": fmt(row["cum_oil_bbl"], ",.0f"),
         "qi (bbl/mo)": fmt(row["qi"], ",.0f"),
         "Di annual (nom)": fmt(row["Di_annual"], ".0%"),
@@ -198,8 +212,8 @@ def well_detail(row) -> dict:
         "Forecast life (mo)": str(int(row["forecast_months"])),
         "GOR, last 12 producing mo (mcf/bbl)": fmt(row["gor_mcf_per_bbl"], ".2f"),
         "Economic limit (bbl/mo)": fmt(row["econ_limit_bpm"], ",.0f"),
-        "PV10 P90 / P50 / P10": _p3(row["pv10_p90_usd"], row["pv10_usd"], row["pv10_p10_usd"],
-                                    usd_mm),
+        f"{pv_label(row['econ_discount'])} P90 / P50 / P10": _p3(
+            row["pv10_p90_usd"], row["pv10_usd"], row["pv10_p10_usd"], usd_mm),
         "Undiscounted net cash flow": usd_mm(row["ncf_usd"]),
         "Shut-in oil price (covers LOE now)": price(row["shut_in_oil_price"]),
         "Lateral (ft)": fmt(row["lateral_ft"], ",.0f"),
@@ -216,21 +230,22 @@ def cohort_metrics(ok: pd.DataFrame) -> dict:
         "Mean EUR (P50)": bbl(ok["eur_bbl"].mean()),
         "Mean EUR P90–P10": bbl_range(ok["eur_p90_bbl"].mean(), ok["eur_p10_bbl"].mean()),
         "Total remaining (P50)": bbl(ok["remaining_bbl"].sum()),
-        "Total PV10 (P50)": usd_mm(ok["pv10_usd"].sum()),
+        f"Total {pv_label(ok['econ_discount'].iloc[0])} (P50)": usd_mm(ok["pv10_usd"].sum()),
         "Mean b-factor": f"{ok['b'].mean():.2f}",
         "Mean Di (nom. annual)": f"{ok['Di_annual'].mean():.0%}",
     }
 
 
 # Ranking table: (column, source, kind). kind sets the scaling and display:
-# "mbbl" thousand barrels, "usdmm" $ millions, others as named.
+# "mbbl" thousand barrels, "usdmm" $ millions, others as named. "{pv}" in a column
+# name becomes the results' pv_label, so take column names from ranking_table().
 RANKING = [
     ("Lease", "lease_name", "text"), ("Well", "well_no", "text"), ("API", "api8", "int"),
     ("Cluster", "cluster", "text"), ("b", "b", "b"), ("Di ann.", "Di_annual", "pct"),
     ("Cum (Mbbl)", "cum_oil_bbl", "mbbl"),
     ("EUR P90 (Mbbl)", "eur_p90_bbl", "mbbl"), ("EUR P50 (Mbbl)", "eur_bbl", "mbbl"),
     ("EUR P10 (Mbbl)", "eur_p10_bbl", "mbbl"), ("Remaining P50 (Mbbl)", "remaining_bbl", "mbbl"),
-    ("PV10 P50 ($MM)", "pv10_usd", "usdmm"), ("PV10 P90–P10 ($MM)", None, "pvrange"),
+    ("{pv} P50 ($MM)", "pv10_usd", "usdmm"), ("{pv} P90–P10 ($MM)", None, "pvrange"),
     ("Shut-in oil price ($/bbl)", "shut_in_oil_price", "price"),
     ("EUR/1k ft (Mbbl)", "eur_per_1000ft", "mbbl1"), ("R²", "r_squared", "r2"),
     ("QC flags", "qc_flags", "text"),
@@ -238,11 +253,14 @@ RANKING = [
 
 
 def ranking_table(ok: pd.DataFrame) -> pd.DataFrame:
-    """Numeric ranking table (Mbbl, $MM), sorted by P50 EUR."""
+    """Numeric ranking table (Mbbl, $MM), sorted by P50 EUR, with the PV columns
+    named for ok's discount rate."""
     ok = ok.sort_values("eur_bbl", ascending=False)
+    pv = pv_label(ok["econ_discount"].iloc[0])
     scale = {"mbbl": 1e-3, "mbbl1": 1e-3, "usdmm": 1e-6, "pct": 100.0}
     out = {}
     for name, col, kind in RANKING:
+        name = name.replace("{pv}", pv)
         if kind == "pvrange":
             out[name] = [usd_mm_range(lo, hi).removesuffix(" MM").replace("$", "")
                          for lo, hi in zip(ok["pv10_p90_usd"], ok["pv10_p10_usd"])]
@@ -257,9 +275,16 @@ RANKING_FORMATS = {"int": "{:.0f}", "b": "{:.2f}", "pct": "{:.0f}%", "mbbl": "{:
                    "mbbl1": "{:,.1f}", "usdmm": "{:,.1f}", "price": "{:,.2f}", "r2": "{:.3f}"}
 
 
+def ranking_kinds(table: pd.DataFrame) -> dict[str, str]:
+    """Column name -> kind (see RANKING) for a table from ranking_table()."""
+    if len(table.columns) != len(RANKING):
+        raise ValueError("expected a table from ranking_table()")
+    return dict(zip(table.columns, (kind for _, _, kind in RANKING)))
+
+
 def ranking_cells(table: pd.DataFrame) -> list[list[str]]:
     """The ranking table as display strings (static page)."""
-    kinds = {name: kind for name, _, kind in RANKING}
+    kinds = ranking_kinds(table)
     rows = []
     for _, r in table.iterrows():
         rows.append([(str(v) if kinds[c] in ("text", "pvrange") else
