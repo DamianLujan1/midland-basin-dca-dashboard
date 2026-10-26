@@ -104,6 +104,18 @@ Then open http://localhost:8501.
 3. Deploy. On first launch the app auto-runs the pipeline if
    `results/midland_basin_dca_results.csv` is missing, so no extra steps are needed.
 
+## Deploy on Vercel (static build)
+
+Streamlit needs a long-running server, so the Vercel deployment is a static build of
+the same dashboard: `scripts/build_static.py` runs the pipeline (`src/`) on the data in
+`data/` and writes `public/index.html` (Plotly charts, well selector, cohort table,
+clusters, CSV download). `vercel.json` serves `public/` as-is.
+
+```bash
+python scripts/build_static.py   # regenerate public/ after changing data or code
+vercel deploy --prod
+```
+
 ## Project structure
 
 ```
