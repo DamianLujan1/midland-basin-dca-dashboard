@@ -4,13 +4,15 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Midland Basin DCA Dashboard</title>
-<script src="https://cdn.plot.ly/plotly-4.1.1.min.js" charset="utf-8"></script>
+<script src="{{PLOTLY_SRC}}" charset="utf-8"></script>
 <style>
   body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;margin:0;color:#1f2937;background:#fafafa}
   main{max-width:1200px;margin:0 auto;padding:24px}
   h1{margin:0 0 4px}
   .cap{color:#6b7280;font-size:14px;margin-bottom:12px}
   .note{background:#e8f1fb;border-left:4px solid #3b82f6;padding:12px 14px;font-size:14px;border-radius:4px}
+  .warn{background:#fef3c7;border-left:4px solid #d97706;padding:10px 14px;font-size:14px;border-radius:4px;margin:12px 0}
+  .warn:empty{display:none}
   .tabs{display:flex;gap:4px;margin:20px 0 12px;border-bottom:1px solid #e5e7eb}
   .tabs button{border:0;background:none;padding:10px 14px;cursor:pointer;font-size:15px;border-bottom:3px solid transparent}
   .tabs button.active{border-color:#e6550d;color:#e6550d;font-weight:600}
@@ -28,8 +30,9 @@
 </head>
 <body><main>
 <h1>🛢️ Midland Basin DCA — Automated Decline Curve Analysis</h1>
-<div class="cap">Martin County, TX · 30 horizontal oil wells · Hyperbolic Arps with 5%/yr terminal decline · Economic limit 150 bbl/mo</div>
+<div class="cap">{{CAPTION}}</div>
 <div class="note">📊 {{DATA_NOTE}}</div>
+<div id="plotlyWarn" class="warn"></div>
 
 <div class="tabs">
   <button class="active" data-tab="well">Well detail</button>
@@ -39,18 +42,19 @@
 
 <section id="well" class="tab active">
   <label>Select well / lease<br><select id="wellSel"></select></label>
+  <div id="wellQc" class="warn"></div>
   <div id="wellMetrics" class="metrics"></div>
   <div id="wellChart"></div>
   <h3>Well economics &amp; fit</h3>
-  <table id="wellDetail"></table>
+  <div class="scroll"><table id="wellDetail"></table></div>
 </section>
 
 <section id="cohort" class="tab">
-  <h3>Cohort summary — 30 wells</h3>
+  <h3>Cohort summary — {{COHORT_TITLE}}</h3>
   <div class="metrics">{{COHORT}}</div>
   <h3>EUR ranking</h3>
   <div class="scroll"><table>
-    <tr><th>Lease</th><th>Well</th><th>API</th><th>qi (bbl/mo)</th><th>Di ann.</th><th>b</th><th>Cum (bbl)</th><th>EUR (bbl)</th><th>Remaining (bbl)</th><th>EUR/1k ft</th><th>Cluster</th><th>R²</th></tr>
+    <tr><th>Lease</th><th>Well</th><th>API</th><th>qi (bbl/mo)</th><th>Di ann.</th><th>b</th><th>Cum (bbl)</th><th>EUR (bbl)</th><th>Remaining (bbl)</th><th>EUR/1k ft</th><th>Cluster</th><th>R²</th><th>QC flags</th></tr>
     {{RANK_ROWS}}
   </table></div>
   <a class="btn" href="midland_basin_dca_results.csv" download>⬇ Download full results CSV</a>
@@ -58,36 +62,47 @@
 
 <section id="clusters" class="tab">
   <h3>Decline-behavior clusters (k-means on Di, b)</h3>
-  <div class="cap">Wells with similar decline shapes group together — the basis for type curves and performance benchmarking.</div>
+  <div class="cap">Wells with similar decline shapes group together — the basis for type curves and performance benchmarking. Clusters are named by their centroid's initial decline (Di) and b-factor; a high b flattens the decline, so high-b wells can have the largest EURs. Hollow markers are low-confidence fits.</div>
   <div id="clusterChart"></div>
-  <table><tr><th>Cluster</th><th>Wells</th><th>Mean b</th><th>Mean Di ann.</th><th>Mean EUR (bbl)</th><th>Total EUR (bbl)</th><th>Mean R²</th></tr>{{SUMM_ROWS}}</table>
+  <div class="scroll"><table><tr><th>Cluster</th><th>Wells</th><th>Mean b</th><th>Mean Di ann.</th><th>Mean EUR (bbl)</th><th>Total EUR (bbl)</th><th>Mean EUR/1k ft (bbl)</th><th>Mean R²</th></tr>{{SUMM_ROWS}}</table></div>
 </section>
 
-<footer>Built as a freelance portfolio project · methodology: Arps hyperbolic decline fit from peak rate (zeros excluded), 5%/yr terminal decline, EUR to 150 bbl/mo economic limit · k-means (k=3) on (Di, b). Technical estimates, not SPE PRMS reserves.</footer>
+<footer>Built as a freelance portfolio project · {{FOOTER}}</footer>
 </main>
 <script id="payload" type="application/json">{{PAYLOAD}}</script>
 <script>
 const P = JSON.parse(document.getElementById('payload').textContent);
 const cfg = {responsive:true, displaylogo:false};
+const hasPlotly = typeof window.Plotly !== 'undefined';
+if (!hasPlotly) document.getElementById('plotlyWarn').textContent =
+  'Charts could not be loaded (the Plotly script was blocked or is unreachable). Tables and the CSV download still work.';
+function draw(id, fig){ if (hasPlotly) Plotly.react(id, fig.data, fig.layout, cfg); }
+function resize(id){ if (hasPlotly && document.getElementById(id).data) Plotly.Plots.resize(id); }
+
+let clusterDrawn = false;
+document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => {
+  document.querySelectorAll('.tabs button,.tab').forEach(e => e.classList.remove('active'));
+  b.classList.add('active'); document.getElementById(b.dataset.tab).classList.add('active');
+  if (b.dataset.tab === 'clusters') {
+    if (!clusterDrawn) { draw('clusterChart', P.clusterFig); clusterDrawn = true; }
+    else resize('clusterChart');
+  }
+  if (b.dataset.tab === 'well') resize('wellChart');
+});
+
 const sel = document.getElementById('wellSel');
 for (const [api, w] of Object.entries(P.wells)) sel.add(new Option(w.label, api));
 function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML;}
 function showWell(api){
   const w = P.wells[api];
+  document.getElementById('wellQc').textContent = w.qc ? '⚠️ QC: ' + w.qc : '';
   document.getElementById('wellMetrics').innerHTML = Object.entries(w.metrics)
     .map(([k,v])=>`<div class="metric"><span>${esc(k)}</span><b>${esc(v)}</b></div>`).join('');
   document.getElementById('wellDetail').innerHTML = Object.entries(w.detail)
     .map(([k,v])=>`<tr><th>${esc(k)}</th><td>${esc(v)}</td></tr>`).join('');
-  Plotly.react('wellChart', w.fig.data, w.fig.layout, cfg);
+  draw('wellChart', w.fig);
 }
 sel.onchange = () => showWell(sel.value);
-showWell(sel.value);
-let clusterDrawn = false;
-document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => {
-  document.querySelectorAll('.tabs button,.tab').forEach(e => e.classList.remove('active'));
-  b.classList.add('active'); document.getElementById(b.dataset.tab).classList.add('active');
-  if (b.dataset.tab === 'clusters' && !clusterDrawn) { Plotly.newPlot('clusterChart', P.clusterFig.data, P.clusterFig.layout, cfg); clusterDrawn = true; }
-  if (b.dataset.tab === 'well') Plotly.Plots.resize('wellChart');
-});
+if (sel.options.length) showWell(sel.value);
 </script>
 </body></html>

@@ -11,34 +11,37 @@ from __future__ import annotations
 import html
 import json
 import os
+import re
 import shutil
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-import pandas as pd  # noqa: E402
+from plotly.offline import get_plotlyjs_version  # noqa: E402
 
+from src.clustering import cluster_summary  # noqa: E402
 from src.data_loader import load_production  # noqa: E402
 from src.figures import cluster_figure, well_figure  # noqa: E402
-from src.pipeline import run as run_pipeline  # noqa: E402
+from src.pipeline import RESULTS_CSV, run as run_pipeline  # noqa: E402
+from src.report import (caption, data_note, fmt, methodology, well_detail,  # noqa: E402
+                        well_label, well_metrics)
 
 DATA = os.path.join(ROOT, "data")
 PUBLIC = os.path.join(ROOT, "public")
-
-DATA_NOTE = (
-    "Production: real Texas Railroad Commission (RRC) monthly production records, "
-    "Martin County, TX — 30 horizontal oil wells (Pioneer Natural Resources, Spraberry "
-    "Trend Area), single-well leases, Jan 2022–Jun 2026. Obtained via the open dataset "
-    '<a href="https://github.com/Dansaad2020/ai-ml-dca-permian">Dansaad2020/ai-ml-dca-permian</a>, '
-    "which republishes public RRC production, permit, wellbore and completion records; "
-    "RRC's interactive query endpoints were unreachable at build time, so the data was "
-    "not pulled directly from rrc.texas.gov. No production numbers were fabricated."
-)
+# Same plotly.js version the installed plotly.py generates figure JSON for.
+PLOTLY_SRC = f"https://cdn.plot.ly/plotly-{get_plotlyjs_version()}.min.js"
 
 
-def fmt(v, spec):
-    return "" if pd.isna(v) else format(v, spec)
+def cells(values) -> str:
+    return "<tr>" + "".join(f"<td>{html.escape(str(v))}</td>" for v in values) + "</tr>"
+
+
+def script_json(obj) -> str:
+    """JSON that is safe inside a <script> element: no '<', '>' or '&' can end
+    the element or open a comment, whatever the data contains."""
+    return (json.dumps(obj, separators=(",", ":"))
+            .replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026"))
 
 
 def main() -> None:
@@ -48,35 +51,13 @@ def main() -> None:
     ok = results[results["status"] == "ok"].copy()
 
     wells = {}
-    for r in ok.itertuples():
-        row = ok[ok["api8"] == r.api8].iloc[0]
-        fig = well_figure(prod, row, 0.05 / 12, 150.0)
-        wells[str(int(r.api8))] = {
-            "label": f"{r.lease_name} ({r.well_no}) — API {int(r.api8)}",
-            "fig": json.loads(fig.to_json()),
-            "metrics": {
-                "EUR": f"{r.eur_bbl:,.0f} bbl",
-                "Remaining": f"{r.remaining_bbl:,.0f} bbl",
-                "b-factor": f"{r.b:.2f}",
-                "Di (nom. annual)": f"{r.Di_annual:.0%}",
-                "Fit R²": f"{r.r_squared:.3f}",
-            },
-            "detail": {
-                "Lease": r.lease_name, "Well": r.well_no, "API": str(int(r.api8)),
-                "Operator": r.operator, "Field": r.field,
-                "First prod": str(r.first_prod), "History (mo)": str(int(r.months_history)),
-                "Cum oil (bbl)": f"{r.cum_oil_bbl:,.0f}",
-                "qi (bbl/mo)": f"{r.qi:,.0f}",
-                "Di annual (nom)": f"{r.Di_annual:.0%}",
-                "b-factor": f"{r.b:.3f}",
-                "EUR (bbl)": f"{r.eur_bbl:,.0f}",
-                "Remaining (bbl)": f"{r.remaining_bbl:,.0f}",
-                "Forecast life (mo)": str(int(r.forecast_months)),
-                "Lateral (ft)": fmt(r.lateral_ft, ",.0f"),
-                "EUR / 1,000 ft": fmt(r.eur_per_1000ft, ",.0f") + " bbl",
-                "Decline cluster": r.cluster,
-                "R²": f"{r.r_squared:.3f}",
-            },
+    for _, row in ok.iterrows():
+        wells[str(int(row["api8"]))] = {
+            "label": well_label(row),
+            "qc": row["qc_flags"],
+            "fig": json.loads(well_figure(prod, row).to_json()),
+            "metrics": well_metrics(row),
+            "detail": {k: str(v) for k, v in well_detail(row).items()},
         }
 
     cohort = {
@@ -85,45 +66,46 @@ def main() -> None:
         "Mean EUR": f"{ok['eur_bbl'].mean():,.0f} bbl",
         "Total remaining": f"{ok['remaining_bbl'].sum():,.0f} bbl",
     }
-    rank = ok.sort_values("eur_bbl", ascending=False)
-    rank_rows = "".join(
-        "<tr>" + "".join(f"<td>{html.escape(str(c))}</td>" for c in [
-            r.lease_name, r.well_no, int(r.api8), f"{r.qi:,.0f}", f"{r.Di_annual:.0%}",
-            f"{r.b:.2f}", f"{r.cum_oil_bbl:,.0f}", f"{r.eur_bbl:,.0f}",
-            f"{r.remaining_bbl:,.0f}", fmt(r.eur_per_1000ft, ",.0f"), r.cluster,
-            f"{r.r_squared:.3f}"]) + "</tr>"
-        for r in rank.itertuples())
-
-    summ = (ok.groupby("cluster")
-              .agg(wells=("api8", "count"), mean_b=("b", "mean"),
-                   mean_Di_ann=("Di_annual", "mean"), mean_EUR=("eur_bbl", "mean"),
-                   total_EUR=("eur_bbl", "sum"), mean_R2=("r_squared", "mean"))
-              .reset_index())
-    summ_rows = "".join(
-        f"<tr><td>{html.escape(s.cluster)}</td><td>{s.wells}</td><td>{s.mean_b:.2f}</td>"
-        f"<td>{s.mean_Di_ann:.0%}</td><td>{s.mean_EUR:,.0f}</td><td>{s.total_EUR:,.0f}</td>"
-        f"<td>{s.mean_R2:.3f}</td></tr>" for s in summ.itertuples())
+    rank_rows = "".join(cells([
+        r.lease_name, r.well_no, int(r.api8), fmt(r.qi, ",.0f"), fmt(r.Di_annual, ".0%"),
+        fmt(r.b, ".2f"), fmt(r.cum_oil_bbl, ",.0f"), fmt(r.eur_bbl, ",.0f"),
+        fmt(r.remaining_bbl, ",.0f"), fmt(r.eur_per_1000ft, ",.0f"), r.cluster,
+        fmt(r.r_squared, ".3f"), r.qc_flags or "—"])
+        for r in ok.sort_values("eur_bbl", ascending=False).itertuples())
+    summ_rows = "".join(cells([
+        s.cluster, s.wells, fmt(s.mean_b, ".2f"), fmt(s.mean_Di_annual, ".0%"),
+        fmt(s.mean_EUR_bbl, ",.0f"), fmt(s.total_EUR_bbl, ",.0f"),
+        fmt(s.mean_EUR_per_1000ft, ",.0f"), fmt(s.mean_R2, ".3f")])
+        for s in cluster_summary(results).itertuples())
 
     payload = {
         "wells": dict(sorted(wells.items(), key=lambda kv: kv[1]["label"])),
         "clusterFig": json.loads(cluster_figure(ok).to_json()),
     }
+    fitted = f"{len(ok)} wells" + (f" fitted of {len(results)}" if len(ok) < len(results) else "")
+    parts = {
+        "PLOTLY_SRC": PLOTLY_SRC,
+        "CAPTION": html.escape(caption(results)),
+        "DATA_NOTE": data_note(results, html=True),
+        "COHORT_TITLE": html.escape(fitted),
+        "COHORT": "".join(
+            f'<div class="metric"><span>{html.escape(k)}</span><b>{html.escape(v)}</b></div>'
+            for k, v in cohort.items()),
+        "RANK_ROWS": rank_rows,
+        "SUMM_ROWS": summ_rows,
+        "FOOTER": html.escape(methodology(results)),
+        "PAYLOAD": script_json(payload),
+    }
 
-    tpl = open(os.path.join(ROOT, "scripts", "template.html"), encoding="utf-8").read()
-    page = (tpl.replace("{{DATA_NOTE}}", DATA_NOTE)
-               .replace("{{COHORT}}", "".join(
-                   f'<div class="metric"><span>{k}</span><b>{v}</b></div>'
-                   for k, v in cohort.items()))
-               .replace("{{RANK_ROWS}}", rank_rows)
-               .replace("{{SUMM_ROWS}}", summ_rows)
-               .replace("{{PAYLOAD}}", json.dumps(payload, separators=(",", ":"))
-                        .replace("</", "<\\/")))
+    with open(os.path.join(ROOT, "scripts", "template.html"), encoding="utf-8") as f:
+        tpl = f.read()
+    # One pass, so text inserted for one placeholder is never re-scanned for another.
+    page = re.sub(r"\{\{(\w+)\}\}", lambda m: parts[m.group(1)], tpl)
 
     os.makedirs(PUBLIC, exist_ok=True)
     with open(os.path.join(PUBLIC, "index.html"), "w", encoding="utf-8") as f:
         f.write(page)
-    shutil.copy(os.path.join(ROOT, "results", "midland_basin_dca_results.csv"),
-                os.path.join(PUBLIC, "midland_basin_dca_results.csv"))
+    shutil.copy(RESULTS_CSV, os.path.join(PUBLIC, "midland_basin_dca_results.csv"))
     print(f"wrote public/index.html ({len(page)/1e6:.2f} MB), {len(wells)} wells")
 
 
