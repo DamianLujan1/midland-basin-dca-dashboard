@@ -23,9 +23,11 @@ from plotly.offline import get_plotlyjs_version  # noqa: E402
 from src.clustering import cluster_summary  # noqa: E402
 from src.data_loader import load_production  # noqa: E402
 from src.figures import cluster_figure, type_curve_figure, well_figure  # noqa: E402
-from src.pipeline import RESULTS_CSV, TYPE_CURVE_CSV, run as run_pipeline  # noqa: E402
-from src.report import (CLUSTER_NOTE, caption, data_note, fmt, methodology,  # noqa: E402
-                        well_detail, well_label, well_metrics)
+from src.pipeline import (RESULTS_CSV, TYPE_CURVE_CSV, load_ensemble,  # noqa: E402
+                          run as run_pipeline)
+from src.report import (CLUSTER_NOTE, RANGE_NOTE, RANKING, caption, cohort_metrics,  # noqa: E402
+                        data_note, economics_note, fmt, methodology, ranking_cells,
+                        ranking_table, well_detail, well_label, well_metrics, well_ranges)
 from src.type_curve import observed_type_curve  # noqa: E402
 
 DATA = os.path.join(ROOT, "data")
@@ -47,37 +49,30 @@ def script_json(obj) -> str:
 
 def main() -> None:
     results = run_pipeline()
+    ensembles = load_ensemble()
     prod = load_production(
         os.path.join(DATA, "martin_selected_30_monthly_production_normalized.csv"))
     ok = results[results["status"] == "ok"].copy()
 
     wells = {}
     for _, row in ok.iterrows():
-        wells[str(int(row["api8"]))] = {
+        api8 = int(row["api8"])
+        wells[str(api8)] = {
             "label": well_label(row),
             "qc": row["qc_flags"],
-            "fig": json.loads(well_figure(prod, row).to_json()),
+            "fig": json.loads(well_figure(prod, row, ensembles.get(api8)).to_json()),
             "metrics": well_metrics(row),
+            "ranges": well_ranges(row),
             "detail": {k: str(v) for k, v in well_detail(row).items()},
         }
 
-    cohort = {
-        "Mean b-factor": f"{ok['b'].mean():.2f}",
-        "Mean Di (nom. annual)": f"{ok['Di_annual'].mean():.0%}",
-        "Mean EUR": f"{ok['eur_bbl'].mean():,.0f} bbl",
-        "Total remaining": f"{ok['remaining_bbl'].sum():,.0f} bbl",
-    }
-    rank_rows = "".join(cells([
-        r.lease_name, r.well_no, int(r.api8), fmt(r.qi, ",.0f"), fmt(r.Di_annual, ".0%"),
-        fmt(r.b, ".2f"), fmt(r.cum_oil_bbl, ",.0f"), fmt(r.eur_bbl, ",.0f"),
-        fmt(r.remaining_bbl, ",.0f"), fmt(r.eur_per_1000ft, ",.0f"), r.cluster,
-        fmt(r.r_squared, ".3f"), r.qc_flags or "—"])
-        for r in ok.sort_values("eur_bbl", ascending=False).itertuples())
+    rank_head = "<tr>" + "".join(f"<th>{html.escape(name)}</th>" for name, _, _ in RANKING) + "</tr>"
+    rank_rows = "".join(cells(r) for r in ranking_cells(ranking_table(ok)))
     summ_rows = "".join(cells([
         s.cluster, s.wells, fmt(s.mean_retention_12mo, ".0%"),
         fmt(s.mean_retention_36mo, ".0%"), fmt(s.mean_b, ".2f"), fmt(s.mean_Di_annual, ".0%"),
-        fmt(s.mean_EUR_bbl, ",.0f"), fmt(s.total_EUR_bbl, ",.0f"),
-        fmt(s.mean_EUR_per_1000ft, ",.0f"), fmt(s.mean_R2, ".3f")])
+        fmt(s.mean_EUR_bbl / 1e3, ",.0f"), fmt(s.total_EUR_bbl / 1e3, ",.0f"),
+        fmt(s.mean_EUR_per_1000ft / 1e3, ",.1f"), fmt(s.mean_R2, ".3f")])
         for s in cluster_summary(results).itertuples())
 
     payload = {
@@ -93,8 +88,11 @@ def main() -> None:
         "COHORT_TITLE": html.escape(fitted),
         "COHORT": "".join(
             f'<div class="metric"><span>{html.escape(k)}</span><b>{html.escape(v)}</b></div>'
-            for k, v in cohort.items()),
+            for k, v in cohort_metrics(ok).items()),
+        "RANK_HEAD": rank_head,
         "RANK_ROWS": rank_rows,
+        "RANGE_NOTE": html.escape(RANGE_NOTE),
+        "ECON_NOTE": html.escape(economics_note(results)),
         "SUMM_ROWS": summ_rows,
         "FOOTER": html.escape(methodology(results)),
         "CLUSTER_NOTE": html.escape(CLUSTER_NOTE),

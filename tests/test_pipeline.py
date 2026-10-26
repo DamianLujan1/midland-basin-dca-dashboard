@@ -5,22 +5,33 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src import pipeline
-from src.arps import _switch_time, terminal_rate
+from src import pipeline, uncertainty
+from src.arps import B_CAP, _switch_time, terminal_rate
 from src.data_loader import load_production
+from src.economics import cash_flow, economic_limit, present_value
 from src.figures import well_figure
 
 
 @pytest.fixture(scope="module")
-def results(tmp_path_factory):
+def out_dir(tmp_path_factory):
     out = tmp_path_factory.mktemp("results")
     mp = pytest.MonkeyPatch()
     mp.setattr(pipeline, "RESULTS", str(out))
     mp.setattr(pipeline, "RESULTS_CSV", str(out / "results.csv"))
     mp.setattr(pipeline, "TYPE_CURVE_CSV", str(out / "type_curve.csv"))
-    res = pipeline.run()
-    yield res
+    mp.setattr(pipeline, "ENSEMBLE_CSV", str(out / "ensemble.csv"))
+    yield out
     mp.undo()
+
+
+@pytest.fixture(scope="module")
+def results(out_dir):
+    return pipeline.run()
+
+
+@pytest.fixture(scope="module")
+def ensembles(results, out_dir):
+    return pipeline.load_ensemble(str(out_dir / "ensemble.csv"))
 
 
 @pytest.fixture(scope="module")
@@ -81,7 +92,12 @@ def test_partial_month_no_longer_pins_b(results):
 
 
 def test_assumptions_and_flags_recorded(results):
-    assert (results["econ_limit_bpm"] == pipeline.ECON_LIMIT_BPM).all()
+    assert results["econ_limit_derived"].all()
+    for _, row in results.iterrows():
+        assert row["econ_limit_bpm"] == pytest.approx(
+            economic_limit(pipeline.ECONOMICS, row["gor_mcf_per_bbl"]))
+    for k, v in pipeline.ECONOMICS.as_columns().items():
+        assert (results[k] == v).all()
     assert (results["dmin_annual"] == pipeline.DMIN_ANNUAL).all()
     capped = results["forecast_months"] == results["forecast_month_cap"]
     assert (results["forecast_capped"] == capped).all()
@@ -120,16 +136,76 @@ def test_forecast_cap_is_total_life(results):
     assert (results["months_history"] + results["forecast_months"] <= life).all()
 
 
-def test_sensitivity_run_does_not_write(tmp_path, monkeypatch):
-    monkeypatch.setattr(pipeline, "RESULTS", str(tmp_path / "r"))
-    monkeypatch.setattr(pipeline, "RESULTS_CSV", str(tmp_path / "r" / "x.csv"))
-    monkeypatch.setattr(pipeline, "TYPE_CURVE_CSV", str(tmp_path / "r" / "tc.csv"))
-    base = pipeline.run(write=False)
+def test_sensitivity_run_does_not_write(tmp_path, monkeypatch, results, ensembles):
+    for name in ("RESULTS", "RESULTS_CSV", "TYPE_CURVE_CSV", "ENSEMBLE_CSV"):
+        monkeypatch.setattr(pipeline, name, str(tmp_path / "r" / name))
     harsher = pipeline.run(dmin_annual=0.12, econ_limit_bpm=300.0, max_life_months=360,
-                           write=False)
+                           ensembles=ensembles, write=False)
     assert not (tmp_path / "r").exists()
-    assert (harsher["eur_bbl"] <= base["eur_bbl"] + 1e-6).all()
+    assert (harsher["eur_bbl"] <= results["eur_bbl"] + 1e-6).all()
+    assert (harsher["eur_p10_bbl"] <= results["eur_p10_bbl"] + 1e-6).all()
     assert harsher["dmin_annual"].eq(0.12).all() and harsher["max_life_months"].eq(360).all()
+    assert harsher["econ_limit_bpm"].eq(300.0).all() and not harsher["econ_limit_derived"].any()
+
+
+def test_saved_ensembles_reproduce_the_base_case(results, ensembles):
+    # The app's scenario path: reuse the saved ensembles instead of refitting them.
+    again = pipeline.run(ensembles=ensembles, write=False)
+    for col in pipeline.RANGE_COLS + ["eur_bbl", "pv10_usd"]:
+        np.testing.assert_allclose(again[col], results[col], rtol=1e-9)
+
+
+def test_ranges_bracket_the_fit(results):
+    ok = results[results["status"] == "ok"]
+    for low, mid, high in (("eur_p90_bbl", "eur_bbl", "eur_p10_bbl"),
+                           ("remaining_p90_bbl", "remaining_bbl", "remaining_p10_bbl"),
+                           ("pv10_p90_usd", "pv10_usd", "pv10_p10_usd")):
+        assert (ok[low] <= ok[mid]).all() and (ok[mid] <= ok[high]).all()
+        assert (ok[low] < ok[high]).all()
+    ratio = ok["eur_p10_bbl"] / ok["eur_p90_bbl"]
+    assert ratio.between(1.02, 3.0).all()
+    assert (ok["eur_p90_bbl"] >= ok["cum_oil_bbl"]).all()
+
+
+def test_ensembles_are_reproducible_and_saved(results, ensembles):
+    assert set(ensembles) == set(results["api8"])
+    assert all(len(p) >= 0.95 * uncertainty.BOOT_SAMPLES for p in ensembles.values())
+    assert all((p[:, 2] <= B_CAP + 1e-9).all() for p in ensembles.values())
+    prod = load_production(os.path.join(
+        pipeline.DATA, "martin_selected_30_monthly_production_normalized.csv"))
+    from src.arps import fit_decline
+    from src.data_loader import fitting_series
+    api8 = 31743171
+    q = fitting_series(prod, api8)["oil_bbl"].to_numpy()
+    fit, clock, weight = fit_decline(q, qi_max=q.max())
+    again = uncertainty.ensemble(q, clock, weight, fit, q.max(), B_CAP, seed=api8)
+    np.testing.assert_allclose(again, ensembles[api8], rtol=1e-12)
+
+
+def test_forecast_stops_at_each_wells_economic_limit_and_pv_matches(results, prod):
+    for _, row in results.iterrows():
+        fig = well_figure(prod, row)
+        fc = np.asarray([t for t in fig.data if t.name.startswith("Forecast")][0].y)
+        lim = row["econ_limit_bpm"]
+        assert fc.min() >= lim
+        if not row["forecast_capped"]:
+            nxt = terminal_rate(row["producing_months"] + len(fc), row["qi"], row["Di_monthly"],
+                                row["b"], row["dmin_annual"] / 12)
+            assert nxt < lim
+        ncf = cash_flow(fc, pipeline.ECONOMICS, row["gor_mcf_per_bbl"])
+        assert (ncf >= -1e-6).all()  # the limit is where cash flow turns negative
+        assert row["pv10_usd"] == pytest.approx(present_value(ncf, 0.10), rel=1e-12)
+        assert 0 < row["pv10_usd"] < row["ncf_usd"]
+
+
+def test_chart_band_is_drawn_from_the_ensemble(results, prod, ensembles):
+    for _, row in results.iterrows():
+        fig = well_figure(prod, row, ensembles[int(row["api8"])])
+        names = [t.name for t in fig.data]
+        lo, hi = (fig.data[names.index(n)] for n in ("P90 (low)", "P90–P10 range (80%)"))
+        assert (np.asarray(hi.y) >= np.asarray(lo.y)).all()
+        assert (np.asarray(lo.y) >= row["econ_limit_bpm"] - 1e-9).all()
+        assert names.index("P90–P10 range (80%)") == names.index("P90 (low)") + 1  # fill pair
 
 
 def test_type_curve_ignores_unreported_months_and_stops_when_wells_drop_out(prod):
@@ -142,18 +218,24 @@ def test_type_curve_ignores_unreported_months_and_stops_when_wells_drop_out(prod
     assert tc.set_index("month_on_production").loc[31, "p50_oil_bbl"] == m31.median()
 
 
-def test_restart_wells_no_longer_get_flat_tails(results):
+def test_restart_wells_no_longer_get_flat_tails(results, prod):
+    from src.arps import fit_hyperbolic
+    from src.data_loader import fitting_series
     r = results.set_index("api8")
-    assert (results["b"] <= 1.5 + 1e-9).all()
+    assert (results["b"] <= B_CAP + 1e-9).all()
     # EPLEY-MARTIN 31E: one calendar-time curve through its 2023 dip and rebound
-    # gave b 1.84 and 864k bbl at the base-case assumptions. On producing time
-    # the dip is downtime and the rebound is the well resuming its trend.
+    # gave b 1.84 under the first version's b <= 2 and is held at the 1.2 cap
+    # now. On producing time the dip is downtime and the rebound is the well
+    # resuming its trend.
     e = r.loc[31744051]
-    assert e["b"] < 1.0 and e["eur_bbl"] < 700_000 and e["curtailed_months"] >= 5
-    assert "left out of the fit" in e["qc_flags"]
-    # DAVIS-LACY 31K (b 2.0 on the old bound, 776k): still wants b > 1.5.
+    s = fitting_series(prod, 31744051)
+    cal = fit_hyperbolic(s["t"].to_numpy(float), s["oil_bbl"].to_numpy(),
+                         qi_max=s["oil_bbl"].max())
+    assert cal["b_at_cap"] and e["b"] < cal["b"] - 0.15
+    assert e["curtailed_months"] >= 5 and "down-weighted in the fit" in e["qc_flags"]
+    # DAVIS-LACY 31K (b 2.0 on the old bound, 776k): still wants b above the cap.
     k = r.loc[31744055]
-    assert k["b_at_cap"] and k["eur_bbl"] < 750_000 and "b held at the 1.5 cap" in k["qc_flags"]
+    assert k["b_at_cap"] and k["eur_bbl"] < 700_000 and "b held at the 1.2 cap" in k["qc_flags"]
 
 
 def test_downtime_is_bounded_by_history(results):

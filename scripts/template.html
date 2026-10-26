@@ -20,6 +20,7 @@
   .metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin:12px 0}
   .metric{background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:10px 12px}
   .metric span{display:block;color:#6b7280;font-size:13px}.metric b{font-size:20px}
+  .metric small{display:block;color:#6b7280;font-size:12px;margin-top:2px}
   table{border-collapse:collapse;width:100%;background:#fff;font-size:13px}
   th,td{border:1px solid #e5e7eb;padding:6px 8px;text-align:left}th{background:#f3f4f6}
   .scroll{overflow-x:auto}
@@ -44,19 +45,23 @@
   <label>Select well / lease<br><select id="wellSel"></select></label>
   <div id="wellQc" class="warn"></div>
   <div id="wellMetrics" class="metrics"></div>
+  <div class="cap">{{RANGE_NOTE}}</div>
   <div id="wellChart"></div>
   <h3>Well economics &amp; fit</h3>
   <div class="scroll"><table id="wellDetail"></table></div>
+  <div class="cap">{{ECON_NOTE}}</div>
 </section>
 
 <section id="cohort" class="tab">
   <h3>Cohort summary — {{COHORT_TITLE}}</h3>
   <div class="metrics">{{COHORT}}</div>
+  <div class="cap">Totals add up each well's P50; a sum of well P90s would understate the cohort's own low case, so only P50 totals are shown.</div>
   <h3>EUR ranking</h3>
   <div class="scroll"><table>
-    <tr><th>Lease</th><th>Well</th><th>API</th><th>qi (bbl/mo)</th><th>Di ann.</th><th>b</th><th>Cum (bbl)</th><th>EUR (bbl)</th><th>Remaining (bbl)</th><th>EUR/1k ft</th><th>Cluster</th><th>R²</th><th>QC flags</th></tr>
+    {{RANK_HEAD}}
     {{RANK_ROWS}}
   </table></div>
+  <div class="cap">Mbbl = thousand barrels, $MM = million dollars; forecast volumes are rounded to the nearest thousand barrels. {{ECON_NOTE}}</div>
   <a class="btn" href="midland_basin_dca_results.csv" download>⬇ Download full results CSV</a>
   <h3>Observed type curve</h3>
   <div class="cap">Monthly oil by month on production across the cohort (P25–P75 band, P50 line). It stops where fewer than 80% of the wells are still reporting; later months would describe a small, older subset. <a href="observed_type_curve.csv" download>Download CSV</a></div>
@@ -67,7 +72,7 @@
   <h3>Decline-shape clusters</h3>
   <div class="cap">{{CLUSTER_NOTE}}</div>
   <div id="clusterChart"></div>
-  <div class="scroll"><table><tr><th>Cluster</th><th>Wells</th><th>Rate kept, 1 yr</th><th>Rate kept, 3 yr</th><th>Mean b</th><th>Mean Di ann.</th><th>Mean EUR (bbl)</th><th>Total EUR (bbl)</th><th>Mean EUR/1k ft (bbl)</th><th>Mean R²</th></tr>{{SUMM_ROWS}}</table></div>
+  <div class="scroll"><table><tr><th>Cluster</th><th>Wells</th><th>Rate kept, 1 yr</th><th>Rate kept, 3 yr</th><th>Mean b</th><th>Mean Di ann.</th><th>Mean EUR (Mbbl)</th><th>Total EUR (Mbbl)</th><th>Mean EUR/1k ft (Mbbl)</th><th>Mean R²</th></tr>{{SUMM_ROWS}}</table></div>
 </section>
 
 <footer>Built as a freelance portfolio project · {{FOOTER}}</footer>
@@ -103,7 +108,8 @@ function showWell(api){
   const w = P.wells[api];
   document.getElementById('wellQc').textContent = w.qc ? '⚠️ QC: ' + w.qc : '';
   document.getElementById('wellMetrics').innerHTML = Object.entries(w.metrics)
-    .map(([k,v])=>`<div class="metric"><span>${esc(k)}</span><b>${esc(v)}</b></div>`).join('');
+    .map(([k,v])=>`<div class="metric"><span>${esc(k)}</span><b>${esc(v)}</b>` +
+      (w.ranges[k] ? `<small>P90–P10: ${esc(w.ranges[k])}</small>` : '') + '</div>').join('');
   document.getElementById('wellDetail').innerHTML = Object.entries(w.detail)
     .map(([k,v])=>`<tr><th>${esc(k)}</th><td>${esc(v)}</td></tr>`).join('');
   draw('wellChart', w.fig);

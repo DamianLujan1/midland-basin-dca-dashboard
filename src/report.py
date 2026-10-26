@@ -1,7 +1,7 @@
 """Display text shared by the Streamlit app and the static Vercel build.
 
-Area, well count, dates and forecast assumptions are derived from the results
-table, so they cannot drift from what the pipeline actually used. The
+Area, well count, dates, forecast and economic assumptions are derived from
+the results table, so they cannot drift from what the pipeline actually used. The
 provenance text describes the shipped dataset and must be updated if the data
 source changes.
 """
@@ -9,7 +9,10 @@ from __future__ import annotations
 
 from html import escape
 
+import numpy as np
 import pandas as pd
+
+from src.economics import Economics
 
 CLUSTER_NOTE = (
     "Wells grouped by decline shape: how much of its peak rate each well's fitted decline "
@@ -26,15 +29,61 @@ def fmt(v, spec: str, suffix: str = "") -> str:
     return "—" if pd.isna(v) else format(v, spec) + suffix
 
 
+def bbl(v) -> str:
+    """Forecast volume rounded to the nearest thousand barrels."""
+    return "—" if pd.isna(v) else f"{round(float(v), -3):,.0f} bbl"
+
+
+def bbl_range(lo, hi) -> str:
+    return "—" if pd.isna(lo) or pd.isna(hi) else (
+        f"{round(float(lo), -3):,.0f}–{round(float(hi), -3):,.0f} bbl")
+
+
+def usd_mm(v) -> str:
+    """Dollars in millions, one decimal."""
+    if pd.isna(v):
+        return "—"
+    return ("−" if v < 0 else "") + f"${abs(float(v)) / 1e6:,.1f} MM"
+
+
+def usd_mm_range(lo, hi) -> str:
+    """'$3.4–8.2 MM'."""
+    if pd.isna(lo) or pd.isna(hi):
+        return "—"
+    return usd_mm(lo).removesuffix(" MM") + "–" + usd_mm(hi).replace("$", "", 1)
+
+
+def price(v) -> str:
+    """$/bbl with cents; '−$1.20/bbl' when negative."""
+    return "—" if pd.isna(v) else ("−" if v < 0 else "") + f"${abs(float(v)):,.2f}/bbl"
+
+
 def _month(yyyymm) -> str:
     if pd.isna(yyyymm) or str(yyyymm) == "":
         return "—"
     return pd.to_datetime(str(yyyymm), format="%Y%m").strftime("%b %Y")
 
 
-def _assumptions(results: pd.DataFrame) -> tuple[float, float, int]:
+def _assumptions(results: pd.DataFrame) -> tuple[float, int]:
     r = results.iloc[0]
-    return float(r["dmin_annual"]), float(r["econ_limit_bpm"]), int(r["max_life_months"])
+    return float(r["dmin_annual"]), int(r["max_life_months"])
+
+
+def economics_of(results: pd.DataFrame) -> Economics:
+    return Economics.from_row(results.iloc[0])
+
+
+def econ_limit_text(results: pd.DataFrame) -> str:
+    """'economic limit 108–137 bbl/mo where cash flow turns negative' or a fixed limit."""
+    lim = results["econ_limit_bpm"]
+    lim = lim[np.isfinite(lim)]
+    if not bool(results["econ_limit_derived"].iloc[0]):
+        return f"economic limit {lim.iloc[0]:,.0f} bbl/mo (fixed)" if len(lim) else "economic limit —"
+    if lim.empty:
+        return "no rate covers operating cost"
+    span = (f"{lim.min():,.0f} bbl/mo" if round(lim.min()) == round(lim.max())
+            else f"{lim.min():,.0f}–{lim.max():,.0f} bbl/mo")
+    return f"economic limit {span} where cash flow turns negative"
 
 
 def _area(results: pd.DataFrame) -> str:
@@ -44,10 +93,12 @@ def _area(results: pd.DataFrame) -> str:
 
 
 def caption(results: pd.DataFrame) -> str:
-    dmin, econ, cap = _assumptions(results)
+    dmin, cap = _assumptions(results)
+    e = economics_of(results)
     return (f"{_area(results)} · {len(results)} horizontal oil wells · "
             f"Hyperbolic Arps with {dmin:.0%}/yr terminal decline · "
-            f"Economic limit {econ:,.0f} bbl/mo · {cap // 12}-yr max well life")
+            f"${e.oil_price:,.0f}/bbl oil, ${e.gas_price:,.2f}/mcf gas · "
+            f"{econ_limit_text(results).capitalize()} · {cap // 12}-yr max well life")
 
 
 def data_note(results: pd.DataFrame, html: bool = False) -> str:
@@ -68,15 +119,34 @@ def data_note(results: pd.DataFrame, html: bool = False) -> str:
     return note.replace("{source}", f"{SOURCE_REPO} (GitHub)")
 
 
+def economics_note(results: pd.DataFrame) -> str:
+    """One line on the price deck and costs behind PV10 and the economic limit."""
+    e = economics_of(results)
+    return (f"PDP economics, flat prices: ${e.oil_price:,.0f}/bbl oil, ${e.gas_price:,.2f}/mcf "
+            f"casinghead gas at each well's last-12-month GOR; {e.nri:.1%} NRI, 100% WI; "
+            f"Texas severance {e.oil_sev:.1%} oil / {e.gas_sev:.1%} gas, ad valorem "
+            f"{e.ad_valorem:.1%}; LOE ${e.loe_fixed:,.0f}/well-month + ${e.loe_var:,.2f}/bbl; "
+            f"PV at {e.discount:.0%}/yr, mid-month, from the month after the last report. "
+            "No capex, workovers or abandonment cost.")
+
+
+RANGE_NOTE = (
+    "P50 is the fitted forecast. P90 and P10 are the 10th and 90th percentiles of a "
+    "200-member ensemble (block bootstrap of the fit plus a level factor), calibrated so "
+    "80% of held-out 6–18 month volumes fell inside the range in a leave-one-well-out "
+    "hindcast. Beyond 18 months the range is the model's extrapolation.")
+
+
 def methodology(results: pd.DataFrame) -> str:
-    dmin, econ, cap = _assumptions(results)
+    dmin, cap = _assumptions(results)
     n_clusters = results["cluster_id"].nunique()
-    b_cap = float(results.iloc[0].get("b_cap", 1.5))
+    b_cap = float(results.iloc[0].get("b_cap", 1.2))
     return ("Methodology: Arps hyperbolic decline fit from peak rate on producing time "
-            "(shut-in months and months under 50% of trend count only their producing "
-            f"fraction and are left out of the fit), b ≤ {b_cap:g}, robust soft-L1 loss; "
-            f"{dmin:.0%}/yr terminal decline, EUR to "
-            f"{econ:,.0f} bbl/mo economic limit within a {cap // 12}-yr well life · "
+            "(shut-in months and months well under trend count only part of a month and "
+            f"are down-weighted in the fit), b ≤ {b_cap:g}, robust soft-L1 loss; "
+            f"{dmin:.0%}/yr terminal decline, forecast to the "
+            f"{econ_limit_text(results)} within a {cap // 12}-yr well life; P90/P10 from a "
+            "hindcast-calibrated ensemble · "
             f"k-means (k={n_clusters}) on decline shape (rate kept after 1 and 3 producing "
             "years). Technical estimates, not SPE PRMS reserves.")
 
@@ -87,12 +157,25 @@ def well_label(row) -> str:
 
 def well_metrics(row) -> dict:
     return {
-        "EUR": fmt(row["eur_bbl"], ",.0f", " bbl"),
-        "Remaining": fmt(row["remaining_bbl"], ",.0f", " bbl"),
+        "EUR (P50)": bbl(row["eur_bbl"]),
+        "Remaining (P50)": bbl(row["remaining_bbl"]),
+        "PV10 (P50)": usd_mm(row["pv10_usd"]),
         "b-factor": fmt(row["b"], ".2f"),
-        "Di (nom. annual)": fmt(row["Di_annual"], ".0%"),
         "Fit R²": fmt(row["r_squared"], ".3f"),
     }
+
+
+def well_ranges(row) -> dict:
+    """P90–P10 ranges shown under the well metrics."""
+    return {
+        "EUR (P50)": bbl_range(row["eur_p90_bbl"], row["eur_p10_bbl"]),
+        "Remaining (P50)": bbl_range(row["remaining_p90_bbl"], row["remaining_p10_bbl"]),
+        "PV10 (P50)": usd_mm_range(row["pv10_p90_usd"], row["pv10_p10_usd"]),
+    }
+
+
+def _p3(lo, mid, hi, f) -> str:
+    return " / ".join(f(v) for v in (lo, mid, hi))
 
 
 def well_detail(row) -> dict:
@@ -104,18 +187,82 @@ def well_detail(row) -> dict:
         "Last reported month": _month(row["last_reported"]),
         "History (mo)": str(int(row["months_history"])),
         "Downtime since peak (mo)": fmt(row["downtime_months"], ".1f"),
-        "Curtailed months left out of fit": fmt(row["curtailed_months"], ".0f"),
+        "Months under 50% of trend (down-weighted)": fmt(row["curtailed_months"], ".0f"),
         "Cum oil (bbl)": fmt(row["cum_oil_bbl"], ",.0f"),
         "qi (bbl/mo)": fmt(row["qi"], ",.0f"),
         "Di annual (nom)": fmt(row["Di_annual"], ".0%"),
         "b-factor": fmt(row["b"], ".3f"),
-        "EUR (bbl)": fmt(row["eur_bbl"], ",.0f"),
-        "Remaining (bbl)": fmt(row["remaining_bbl"], ",.0f"),
+        "EUR P90 / P50 / P10": _p3(row["eur_p90_bbl"], row["eur_bbl"], row["eur_p10_bbl"], bbl),
+        "Remaining P90 / P50 / P10": _p3(row["remaining_p90_bbl"], row["remaining_bbl"],
+                                         row["remaining_p10_bbl"], bbl),
         "Forecast life (mo)": str(int(row["forecast_months"])),
+        "GOR, last 12 producing mo (mcf/bbl)": fmt(row["gor_mcf_per_bbl"], ".2f"),
+        "Economic limit (bbl/mo)": fmt(row["econ_limit_bpm"], ",.0f"),
+        "PV10 P90 / P50 / P10": _p3(row["pv10_p90_usd"], row["pv10_usd"], row["pv10_p10_usd"],
+                                    usd_mm),
+        "Undiscounted net cash flow": usd_mm(row["ncf_usd"]),
+        "Shut-in oil price (covers LOE now)": price(row["shut_in_oil_price"]),
         "Lateral (ft)": fmt(row["lateral_ft"], ",.0f"),
-        "EUR / 1,000 ft": fmt(row["eur_per_1000ft"], ",.0f", " bbl"),
+        "EUR / 1,000 ft": bbl(row["eur_per_1000ft"]),
         "Decline cluster": row["cluster"],
         "R²": fmt(row["r_squared"], ".3f"),
         "R² (log space)": fmt(row["r_squared_log"], ".3f"),
         "QC flags": row["qc_flags"] or "none",
     }
+
+
+def cohort_metrics(ok: pd.DataFrame) -> dict:
+    return {
+        "Mean EUR (P50)": bbl(ok["eur_bbl"].mean()),
+        "Mean EUR P90–P10": bbl_range(ok["eur_p90_bbl"].mean(), ok["eur_p10_bbl"].mean()),
+        "Total remaining (P50)": bbl(ok["remaining_bbl"].sum()),
+        "Total PV10 (P50)": usd_mm(ok["pv10_usd"].sum()),
+        "Mean b-factor": f"{ok['b'].mean():.2f}",
+        "Mean Di (nom. annual)": f"{ok['Di_annual'].mean():.0%}",
+    }
+
+
+# Ranking table: (column, source, kind). kind sets the scaling and display:
+# "mbbl" thousand barrels, "usdmm" $ millions, others as named.
+RANKING = [
+    ("Lease", "lease_name", "text"), ("Well", "well_no", "text"), ("API", "api8", "int"),
+    ("Cluster", "cluster", "text"), ("b", "b", "b"), ("Di ann.", "Di_annual", "pct"),
+    ("Cum (Mbbl)", "cum_oil_bbl", "mbbl"),
+    ("EUR P90 (Mbbl)", "eur_p90_bbl", "mbbl"), ("EUR P50 (Mbbl)", "eur_bbl", "mbbl"),
+    ("EUR P10 (Mbbl)", "eur_p10_bbl", "mbbl"), ("Remaining P50 (Mbbl)", "remaining_bbl", "mbbl"),
+    ("PV10 P50 ($MM)", "pv10_usd", "usdmm"), ("PV10 P90–P10 ($MM)", None, "pvrange"),
+    ("Shut-in oil price ($/bbl)", "shut_in_oil_price", "price"),
+    ("EUR/1k ft (Mbbl)", "eur_per_1000ft", "mbbl1"), ("R²", "r_squared", "r2"),
+    ("QC flags", "qc_flags", "text"),
+]
+
+
+def ranking_table(ok: pd.DataFrame) -> pd.DataFrame:
+    """Numeric ranking table (Mbbl, $MM), sorted by P50 EUR."""
+    ok = ok.sort_values("eur_bbl", ascending=False)
+    scale = {"mbbl": 1e-3, "mbbl1": 1e-3, "usdmm": 1e-6, "pct": 100.0}
+    out = {}
+    for name, col, kind in RANKING:
+        if kind == "pvrange":
+            out[name] = [usd_mm_range(lo, hi).removesuffix(" MM").replace("$", "")
+                         for lo, hi in zip(ok["pv10_p90_usd"], ok["pv10_p10_usd"])]
+        elif kind == "text":
+            out[name] = ok[col].fillna("").astype(str).to_numpy()
+        else:
+            out[name] = ok[col].to_numpy(float) * scale.get(kind, 1.0)
+    return pd.DataFrame(out)
+
+
+RANKING_FORMATS = {"int": "{:.0f}", "b": "{:.2f}", "pct": "{:.0f}%", "mbbl": "{:,.0f}",
+                   "mbbl1": "{:,.1f}", "usdmm": "{:,.1f}", "price": "{:,.2f}", "r2": "{:.3f}"}
+
+
+def ranking_cells(table: pd.DataFrame) -> list[list[str]]:
+    """The ranking table as display strings (static page)."""
+    kinds = {name: kind for name, _, kind in RANKING}
+    rows = []
+    for _, r in table.iterrows():
+        rows.append([(str(v) if kinds[c] in ("text", "pvrange") else
+                      "—" if pd.isna(v) else RANKING_FORMATS[kinds[c]].format(v)) or "—"
+                     for c, v in r.items()])
+    return rows

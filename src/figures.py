@@ -1,22 +1,26 @@
 """Plotly figures shared by the Streamlit app and the static Vercel build."""
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 
-from src.arps import B_CAP, fit_decline, forecast_to_limit, terminal_rate
+from src import uncertainty
+from src.arps import B_CAP, fit_decline, forecast_to_limit, months_above, terminal_rate
 from src.clustering import cluster_order
 from src.data_loader import fitting_series
 
 CLUSTER_COLORS = ["#d62728", "#ff7f0e", "#1f77b4", "#2ca02c", "#9467bd"]
 
 
-def well_figure(prod, row):
+def well_figure(prod, row, params=None):
     """History + fitted decline + forecast chart for one well.
 
     The forecast is redrawn with the assumptions stored on the results row, so
     it is the same forecast that produced the row's EUR and remaining volume.
+    params, the well's forecast ensemble ((m, 3) array, see src.uncertainty),
+    adds the pointwise P90-P10 band of the monthly rate.
     """
     api8 = int(row["api8"])
     dmin_m = float(row["dmin_annual"]) / 12.0
@@ -27,8 +31,8 @@ def well_figure(prod, row):
     # is deterministic, so refitting reproduces it): the fitted line pauses
     # through shut-ins and curtailments instead of declining across them.
     hist = fitting_series(prod, api8)
-    _, clock = fit_decline(hist["oil_bbl"].to_numpy(), qi_max=float(hist["oil_bbl"].max()),
-                           b_cap=float(row.get("b_cap", B_CAP)))
+    _, clock, _ = fit_decline(hist["oil_bbl"].to_numpy(), qi_max=float(hist["oil_bbl"].max()),
+                              b_cap=float(row.get("b_cap", B_CAP)))
     q_fit_hist = terminal_rate(clock, row["qi"], row["Di_monthly"], row["b"], dmin_m)
 
     fc = forecast_to_limit(row["qi"], row["Di_monthly"], row["b"],
@@ -45,9 +49,27 @@ def well_figure(prod, row):
                          marker_color="#9ecae1"))
     fig.add_trace(go.Scatter(x=hist["date"], y=q_fit_hist, name="Fitted decline",
                              line=dict(color="#e6550d", width=3)))
+    if params is not None and len(params) and max_months > 0:
+        # Drawn while the high case is above the limit; the low edge rests on
+        # the limit once the low case would be shut in.
+        lo, hi = uncertainty.band(params, float(row["producing_months"]), max_months, dmin_m)
+        n = int(months_above(hi, econ_bpm))
+        if n:
+            band_dates = pd.date_range(last_date + pd.offsets.MonthBegin(1), periods=n, freq="MS")
+            fig.add_trace(go.Scatter(x=band_dates, y=np.maximum(lo[:n], econ_bpm),
+                                     name="P90 (low)", line=dict(width=0), showlegend=False,
+                                     hovertemplate="P90 (low): %{y:,.0f}<extra></extra>"))
+            fig.add_trace(go.Scatter(x=band_dates, y=hi[:n], name="P90–P10 range (80%)",
+                                     line=dict(width=0), fill="tonexty",
+                                     fillcolor="rgba(230,85,13,0.15)",
+                                     hovertemplate="P10 (high): %{y:,.0f}<extra></extra>"))
     if len(fc):
         fig.add_trace(go.Scatter(x=fc_dates, y=fc, name=fc_name,
                                  line=dict(color="#e6550d", width=3, dash="dash")))
+    if np.isfinite(econ_bpm):
+        fig.add_hline(y=econ_bpm, line_dash="dot", line_color="#6b7280", line_width=1,
+                      annotation_text=f"economic limit {econ_bpm:,.0f} bbl/mo",
+                      annotation_position="bottom right")
     fig.add_vline(x=last_date, line_dash="dot", line_color="gray",
                   annotation_text="last reported month")
     fig.update_layout(

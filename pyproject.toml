@@ -1,0 +1,23 @@
+[project]
+name = "midland-basin-dca-dashboard"
+version = "0.3.0"
+description = "Automated Arps decline-curve analysis, PDP economics and calibrated P90/P10 ranges for Midland Basin horizontal oil wells"
+readme = "README.md"
+requires-python = ">=3.12"
+# Pinned; must match requirements.txt (tests/test_packaging.py checks), which
+# Streamlit Community Cloud installs from.
+dependencies = [
+    "pandas==3.1.0",
+    "numpy==2.5.4",
+    "scipy==1.18.1",
+    "scikit-learn==1.9.1",
+    "plotly==7.1.0",
+    "streamlit==1.66.1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest==9.1.1"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

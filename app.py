@@ -5,18 +5,21 @@ Run:  streamlit run app.py   (from the repo root)
 from __future__ import annotations
 
 import os
+from dataclasses import asdict, astuple, replace
 
 import pandas as pd
 import streamlit as st
 
 from src.clustering import cluster_summary
 from src.data_loader import load_production
+from src.economics import Economics
 from src.figures import cluster_figure, type_curve_figure, well_figure
-from src.pipeline import (DMIN_ANNUAL, ECON_LIMIT_BPM, MAX_LIFE_MONTHS, RESULTS_CSV,
-                          load_results)
+from src.pipeline import (DMIN_ANNUAL, ECONOMICS, ENSEMBLE_CSV, MAX_LIFE_MONTHS,
+                          RESULTS_CSV, load_ensemble, load_results)
 from src.pipeline import run as run_pipeline
-from src.report import (CLUSTER_NOTE, caption, data_note, methodology, well_detail,
-                        well_label, well_metrics)
+from src.report import (CLUSTER_NOTE, RANGE_NOTE, RANKING, caption, cohort_metrics,
+                        data_note, econ_limit_text, economics_note, methodology,
+                        ranking_table, well_detail, well_label, well_metrics, well_ranges)
 from src.type_curve import observed_type_curve
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -33,25 +36,52 @@ NUM = st.column_config.NumberColumn
 
 @st.cache_data
 def load_all(results_mtime: float):
-    """Load production + results; keyed on the results file's mtime so a
-    re-run pipeline is picked up without restarting the server."""
+    """Load production, results and forecast ensembles; keyed on the results
+    file's mtime so a re-run pipeline is picked up without restarting."""
     prod = load_production(
         os.path.join(DATA, "martin_selected_30_monthly_production_normalized.csv"))
-    return prod, load_results(RESULTS_CSV)
+    return prod, load_results(RESULTS_CSV), load_ensemble(ENSEMBLE_CSV)
 
 
 @st.cache_data(show_spinner="Re-forecasting all wells with these assumptions…")
-def scenario(dmin_annual: float, econ_limit_bpm: float, max_life_months: int,
+def scenario(dmin_annual: float, max_life_months: int, economics: tuple,
              results_mtime: float):
-    """Results under non-base-case forecast assumptions (not written to disk).
+    """Results under non-base-case assumptions (not written to disk). The fits
+    and ensembles do not depend on these, so the saved ensembles are reused.
     Keyed on the results file's mtime too, so a re-run pipeline invalidates
     cached cases along with the base case."""
-    return run_pipeline(econ_limit_bpm=econ_limit_bpm, dmin_annual=dmin_annual,
-                        max_life_months=max_life_months, write=False)
+    return run_pipeline(dmin_annual=dmin_annual, max_life_months=max_life_months,
+                        economics=Economics(*economics),
+                        ensembles=load_all(results_mtime)[2], write=False)
 
 
-BASE = {"dmin_pct": round(DMIN_ANNUAL * 100), "econ": int(ECON_LIMIT_BPM),
-        "life_yr": MAX_LIFE_MONTHS // 12}
+# Sidebar sliders: key -> (label, min, max, step, model value / slider value,
+# display format). Percent sliders divide by 100, so a slider at the base value
+# gives back exactly the base-case number.
+SLIDERS = {
+    "oil_price": ("Oil price (\\$/bbl, flat)", 30.0, 120.0, 1.0, 1, "%.0f"),
+    "gas_price": ("Gas price (\\$/mcf, flat)", 0.0, 6.0, 0.25, 1, "%.2f"),
+    "nri": ("Net revenue interest (%)", 62.5, 87.5, 0.5, 100, "%.1f"),
+    "loe_fixed": ("Fixed LOE (\\$/well-month)", 1000.0, 15000.0, 500.0, 1, "%.0f"),
+    "loe_var": ("Variable LOE (\\$/bbl)", 0.0, 12.0, 0.5, 1, "%.2f"),
+    "discount": ("Discount rate (%/yr)", 5.0, 20.0, 1.0, 100, "%.0f"),
+    "dmin": ("Terminal decline Dmin (%/yr, nominal)", 4.0, 12.0, 1.0, 100, "%.0f"),
+    "life_months": ("Maximum well life (years)", 20.0, 60.0, 5.0, 1 / 12, "%.0f"),
+}
+BASE_MODEL = {**asdict(ECONOMICS), "dmin": DMIN_ANNUAL, "life_months": MAX_LIFE_MONTHS}
+BASE = {k: round(BASE_MODEL[k] * v[4], 6) for k, v in SLIDERS.items()}
+
+
+def to_model(values: dict) -> tuple[float, int, Economics]:
+    """Slider values -> (Dmin, life in months, Economics)."""
+    m = {k: v / SLIDERS[k][4] for k, v in values.items()}
+    econ = replace(ECONOMICS, **{k: m[k] for k in asdict(ECONOMICS) if k in m})
+    return m["dmin"], int(round(m["life_months"])), econ
+
+
+def md(text: str) -> str:
+    """Escape dollar signs, which Streamlit markdown would read as LaTeX math."""
+    return text.replace("$", "\\$")
 
 
 def _reset_assumptions():
@@ -59,30 +89,37 @@ def _reset_assumptions():
 
 
 # ----------------------------------------------------------------------------
-if not os.path.exists(RESULTS_CSV):
+if not (os.path.exists(RESULTS_CSV) and os.path.exists(ENSEMBLE_CSV)):
     # First run (e.g. fresh Streamlit Cloud deploy): build results.
-    with st.spinner("Fitting decline curves (one-time setup)…"):
+    with st.spinner("Fitting decline curves and forecast ranges (one-time setup)…"):
         run_pipeline()
-prod, results = load_all(os.path.getmtime(RESULTS_CSV))
+prod, results, ensembles = load_all(os.path.getmtime(RESULTS_CSV))
 
 with st.sidebar:
-    st.header("Forecast assumptions")
+    st.header("Assumptions")
     for key, value in BASE.items():
         st.session_state.setdefault(key, value)
-    dmin_pct = st.slider("Terminal decline Dmin (%/yr, nominal)", 4, 12, key="dmin_pct")
-    econ = st.slider("Economic limit (bbl/month)", 50, 400, step=25, key="econ")
-    life_yr = st.slider("Maximum well life (years)", 20, 60, step=5, key="life_yr")
+    values = {}
+    for i, (key, (label, lo, hi, step, _, fmt)) in enumerate(SLIDERS.items()):
+        if i == 0:
+            st.subheader("Prices & costs")
+        elif key == "dmin":
+            st.subheader("Decline")
+        values[key] = st.slider(label, lo, hi, step=step, format=fmt, key=key)
     st.button("Reset to base case", on_click=_reset_assumptions)
-    st.caption("Fits do not change; only the forecast tail and EUR do. The static "
-               "Vercel page shows the base case.")
-if (dmin_pct, econ, life_yr) != (BASE["dmin_pct"], BASE["econ"], BASE["life_yr"]):
-    results = scenario(dmin_pct / 100, float(econ), life_yr * 12,
-                       os.path.getmtime(RESULTS_CSV))
+    st.caption(f"Texas severance {ECONOMICS.oil_sev:.1%} oil / {ECONOMICS.gas_sev:.1%} gas "
+               f"and ad valorem {ECONOMICS.ad_valorem:.1%} are fixed. Each well's economic "
+               "limit is where its cash flow turns negative. Fits do not change; the "
+               "forecast tail, EUR and value do. The static Vercel page shows the base case.")
+if values != BASE:
+    dmin, life_months, econ = to_model(values)
+    results = scenario(dmin, life_months, astuple(econ), os.path.getmtime(RESULTS_CSV))
     st.sidebar.info("Showing a sensitivity case, not the base case.")
+st.sidebar.caption(econ_limit_text(results).capitalize() + ".")
 ok = results[results["status"] == "ok"].copy()
 
 st.title("🛢️ Midland Basin — Automated Decline Curve Analysis")
-st.caption(caption(results))
+st.caption(md(caption(results)))
 st.info(data_note(results), icon="📊")
 if ok.empty:
     st.error("No wells were fitted successfully, so there is nothing to show.")
@@ -97,45 +134,43 @@ with tab_well:
     choice = st.selectbox("Select well / lease", sorted(labels.keys()))
     row = ok[ok["api8"] == labels[choice]].iloc[0]
     if row["qc_flags"]:
-        st.warning(f"QC: {row['qc_flags']}", icon="⚠️")
+        st.warning(md(f"QC: {row['qc_flags']}"), icon="⚠️")
 
+    ranges = well_ranges(row)
     for col, (k, v) in zip(st.columns(5), well_metrics(row).items()):
         col.metric(k, v)
+        if k in ranges:
+            col.caption(md(f"P90–P10: {ranges[k]}"))
+    st.caption(RANGE_NOTE)
 
-    st.plotly_chart(well_figure(prod, row), width="stretch")
+    st.plotly_chart(well_figure(prod, row, ensembles.get(int(row["api8"]))), width="stretch")
 
     st.subheader("Well economics & fit")
     detail = well_detail(row)
     st.table(pd.DataFrame({"Value": [str(v) for v in detail.values()]},
                           index=list(detail.keys())))
+    st.caption(md(economics_note(results)))
 
 # ----------------------------------------------------------------------------
 with tab_cohort:
     fitted = f"{len(ok)} wells" + (f" fitted of {len(results)}" if len(ok) < len(results) else "")
     st.subheader(f"Cohort summary — {fitted}")
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Mean b-factor", f"{ok['b'].mean():.2f}")
-    m2.metric("Mean Di (nom. annual)", f"{ok['Di_annual'].mean():.0%}")
-    m3.metric("Mean EUR", f"{ok['eur_bbl'].mean():,.0f} bbl")
-    m4.metric("Total remaining", f"{ok['remaining_bbl'].sum():,.0f} bbl")
+    items = list(cohort_metrics(ok).items())
+    for row_items in (items[:3], items[3:]):
+        for col, (k, v) in zip(st.columns(3), row_items):
+            col.metric(k, v)
+    st.caption("Totals add up each well's P50; a sum of well P90s would understate the "
+               "cohort's own low case, so only P50 totals are shown.")
 
     st.subheader("EUR ranking")
-    table = pd.DataFrame({
-        "Lease": ok["lease_name"], "Well": ok["well_no"], "API": ok["api8"],
-        "qi (bbl/mo)": ok["qi"], "Di ann.": ok["Di_annual"] * 100, "b": ok["b"],
-        "Cum (bbl)": ok["cum_oil_bbl"], "EUR (bbl)": ok["eur_bbl"],
-        "Remaining (bbl)": ok["remaining_bbl"], "EUR/1k ft": ok["eur_per_1000ft"],
-        "Cluster": ok["cluster"], "R²": ok["r_squared"], "QC flags": ok["qc_flags"],
-    })
+    formats = {"int": "%d", "b": "%.2f", "pct": "%.0f%%", "mbbl": "%,.0f", "mbbl1": "%,.1f",
+               "usdmm": "%,.1f", "price": "%,.2f", "r2": "%.3f"}
     st.dataframe(
-        table.sort_values("EUR (bbl)", ascending=False), width="stretch", hide_index=True,
-        column_config={
-            "API": NUM(format="%d"), "qi (bbl/mo)": NUM(format="%,.0f"),
-            "Di ann.": NUM(format="%.0f%%"), "b": NUM(format="%.2f"),
-            "Cum (bbl)": NUM(format="%,.0f"), "EUR (bbl)": NUM(format="%,.0f"),
-            "Remaining (bbl)": NUM(format="%,.0f"), "EUR/1k ft": NUM(format="%,.0f"),
-            "R²": NUM(format="%.3f"),
-        })
+        ranking_table(ok), width="stretch", hide_index=True,
+        column_config={name: NUM(format=formats[kind])
+                       for name, _, kind in RANKING if kind in formats})
+    st.caption(md("Mbbl = thousand barrels, $MM = million dollars; forecast volumes are "
+                  "rounded to the nearest thousand barrels. " + economics_note(results)))
     st.download_button(
         "⬇ Download full results CSV (current assumptions)",
         results.to_csv(index=False).encode(),
@@ -156,6 +191,8 @@ with tab_clusters:
     summ = cluster_summary(results)
     for col in ("mean_Di_annual", "mean_retention_12mo", "mean_retention_36mo"):
         summ[col] *= 100
+    for col in ("mean_EUR_bbl", "total_EUR_bbl", "mean_EUR_per_1000ft"):
+        summ[col] /= 1000
     st.dataframe(
         summ, width="stretch", hide_index=True,
         column_config={
@@ -164,9 +201,9 @@ with tab_clusters:
             "mean_retention_36mo": NUM("Rate kept, 3 yr", format="%.0f%%"),
             "mean_b": NUM("Mean b", format="%.2f"),
             "mean_Di_annual": NUM("Mean Di ann.", format="%.0f%%"),
-            "mean_EUR_bbl": NUM("Mean EUR (bbl)", format="%,.0f"),
-            "total_EUR_bbl": NUM("Total EUR (bbl)", format="%,.0f"),
-            "mean_EUR_per_1000ft": NUM("Mean EUR/1k ft (bbl)", format="%,.0f"),
+            "mean_EUR_bbl": NUM("Mean EUR (Mbbl)", format="%,.0f"),
+            "total_EUR_bbl": NUM("Total EUR (Mbbl)", format="%,.0f"),
+            "mean_EUR_per_1000ft": NUM("Mean EUR/1k ft (Mbbl)", format="%,.1f"),
             "mean_R2": NUM("Mean R²", format="%.3f"),
         })
 

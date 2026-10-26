@@ -2,16 +2,20 @@
 
 For each holdout H, every well is refitted with its last H reported months
 hidden, and the fitted curve's volume over those months is compared with what
-the well actually produced (producing months only). Four variants separate
-the two parts of the current method (src.arps.fit_decline):
+the well actually produced (producing months only). The variants separate the
+two parts of the current method (src.arps.fit_decline) and show the b-cap
+choice:
 
-    earlier       one curve on calendar time, b up to 2.0 (the earlier method)
-    b cap only    calendar time, b <= 1.5
-    clock only    producing-time clock, b up to 2.0
-    current       producing-time clock, b <= 1.5
+    earlier        one curve on calendar time, b up to 2.0 (the first version)
+    calendar 1.2   calendar time, b <= 1.2
+    clock 2.0      producing-time clock, b up to 2.0
+    clock 1.5      producing-time clock, b <= 1.5
+    clock 1.0      producing-time clock, b <= 1.0
+    current        producing-time clock, b <= 1.2
 
 The variants and their settings were chosen on these same 30 wells, so the
-confidence intervals are optimistic, and the 12- and 18-month windows overlap.
+confidence intervals are optimistic, and the windows overlap (only 14 wells
+have enough history for the 24-month holdout).
 
 Run:  python scripts/backtest.py   (from the repo root)
 """
@@ -28,7 +32,7 @@ from src.arps import B_CAP, fit_decline, fit_hyperbolic, hyperbolic_rate  # noqa
 from src.data_loader import fitting_series, load_production  # noqa: E402
 from src.pipeline import DATA  # noqa: E402
 
-HOLDOUTS = (6, 12, 18)
+HOLDOUTS = (6, 12, 18, 24)
 
 
 def calendar(b_cap):
@@ -44,8 +48,8 @@ def calendar(b_cap):
 
 def producing(b_cap):
     def method(series):
-        fit, _ = fit_decline(series["oil_bbl"].to_numpy(),
-                             qi_max=float(series["oil_bbl"].max()), b_cap=b_cap)
+        fit, _, _ = fit_decline(series["oil_bbl"].to_numpy(),
+                                qi_max=float(series["oil_bbl"].max()), b_cap=b_cap)
         if fit["status"] != "ok":
             return None
         return fit["qi"], fit["Di_monthly"], fit["b"], fit["producing_months"]
@@ -54,8 +58,10 @@ def producing(b_cap):
 
 METHODS = {
     "earlier": calendar(2.0),
-    "b cap only": calendar(B_CAP),
-    "clock only": producing(2.0),
+    "calendar 1.2": calendar(B_CAP),
+    "clock 2.0": producing(2.0),
+    "clock 1.5": producing(1.5),
+    "clock 1.0": producing(1.0),
     "current": producing(B_CAP),
 }
 
