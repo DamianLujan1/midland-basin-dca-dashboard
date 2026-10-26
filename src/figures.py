@@ -5,7 +5,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 
-from src.arps import decline_clock, forecast_to_limit, terminal_rate
+from src.arps import B_CAP, fit_decline, forecast_to_limit, terminal_rate
 from src.clustering import cluster_order
 from src.data_loader import fitting_series
 
@@ -23,10 +23,12 @@ def well_figure(prod, row):
     econ_bpm = float(row["econ_limit_bpm"])
     max_months = int(row["forecast_month_cap"])
     full = prod[prod["api8"] == api8].copy()
-    # History from the peak, on the producing-time clock the fit used: the
-    # fitted line pauses through shut-ins instead of declining across them.
+    # History from the peak, on the producing-time clock the fit used (the fit
+    # is deterministic, so refitting reproduces it): the fitted line pauses
+    # through shut-ins and curtailments instead of declining across them.
     hist = fitting_series(prod, api8)
-    clock = decline_clock(hist["oil_bbl"].to_numpy(), row["qi"], row["Di_monthly"], row["b"])
+    _, clock = fit_decline(hist["oil_bbl"].to_numpy(), qi_max=float(hist["oil_bbl"].max()),
+                           b_cap=float(row.get("b_cap", B_CAP)))
     q_fit_hist = terminal_rate(clock, row["qi"], row["Di_monthly"], row["b"], dmin_m)
 
     fc = forecast_to_limit(row["qi"], row["Di_monthly"], row["b"],

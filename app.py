@@ -41,8 +41,11 @@ def load_all(results_mtime: float):
 
 
 @st.cache_data(show_spinner="Re-forecasting all wells with these assumptions…")
-def scenario(dmin_annual: float, econ_limit_bpm: float, max_life_months: int):
-    """Results under non-base-case forecast assumptions (not written to disk)."""
+def scenario(dmin_annual: float, econ_limit_bpm: float, max_life_months: int,
+             results_mtime: float):
+    """Results under non-base-case forecast assumptions (not written to disk).
+    Keyed on the results file's mtime too, so a re-run pipeline invalidates
+    cached cases along with the base case."""
     return run_pipeline(econ_limit_bpm=econ_limit_bpm, dmin_annual=dmin_annual,
                         max_life_months=max_life_months, write=False)
 
@@ -73,7 +76,8 @@ with st.sidebar:
     st.caption("Fits do not change; only the forecast tail and EUR do. The static "
                "Vercel page shows the base case.")
 if (dmin_pct, econ, life_yr) != (BASE["dmin_pct"], BASE["econ"], BASE["life_yr"]):
-    results = scenario(dmin_pct / 100, float(econ), life_yr * 12)
+    results = scenario(dmin_pct / 100, float(econ), life_yr * 12,
+                       os.path.getmtime(RESULTS_CSV))
     st.sidebar.info("Showing a sensitivity case, not the base case.")
 ok = results[results["status"] == "ok"].copy()
 
@@ -139,7 +143,8 @@ with tab_cohort:
 
     st.subheader("Observed type curve")
     st.caption("Monthly oil by month on production across the cohort (P25–P75 band, "
-               "P50 line); months with fewer than 10 reporting wells are omitted.")
+               "P50 line). It stops where fewer than 80% of the wells are still "
+               "reporting; later months would describe a small, older subset.")
     st.plotly_chart(type_curve_figure(observed_type_curve(prod)), width="stretch")
 
 # ----------------------------------------------------------------------------

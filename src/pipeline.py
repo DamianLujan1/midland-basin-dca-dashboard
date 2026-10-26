@@ -27,10 +27,17 @@ TYPE_CURVE_CSV = os.path.join(RESULTS, "observed_type_curve.csv")
 
 # Base-case forecast assumptions (see README "Forecast assumptions").
 ECON_LIMIT_BPM = 150.0   # ~5 BOPD economic limit
-DMIN_ANNUAL = 0.08       # 8%/yr nominal terminal decline, mid-range of the 6-10% in use
+DMIN_ANNUAL = 0.08       # 8%/yr nominal terminal decline (between the earlier 5% and the
+                         # source dataset's own 9.6%)
 MAX_LIFE_MONTHS = 600    # 50-year total well life, counted from first production
 N_CLUSTERS = None         # None: choose k by silhouette (clustering.choose_k)
 R2_LOW_CONFIDENCE = 0.6  # fits below this R² (linear or log) are low-confidence
+# Wells whose last this-many reported months are shut in or curtailed are
+# low-confidence: the forecast assumes they return to trend.
+CURTAILED_AT_END_LOW_CONFIDENCE = 2
+# Note wells with this many months read as curtailed and left out of the fit,
+# so a fit that excluded much of the history does not look clean.
+CURTAILED_MONTHS_NOTE = 3
 # Flag forecasts whose first month is off the recent producing rate (median of
 # the last 6 producing months, so one curtailed month does not trigger it) by
 # more than this factor in either direction.
@@ -45,7 +52,7 @@ RRC_DISTRICT = {1: "01", 2: "02", 3: "03", 4: "04", 5: "05", 6: "06", 7: "6E",
 FIT_COLS = {"qi": np.nan, "Di_monthly": np.nan, "Di_annual": np.nan, "b": np.nan,
             "r_squared": np.nan, "r_squared_log": np.nan, "n_partial_months": 0,
             "bounds_hit": "", "b_at_cap": False, "producing_months": np.nan,
-            "downtime_months": np.nan, "curtailed_months_at_end": 0,
+            "downtime_months": np.nan, "curtailed_months": 0, "curtailed_months_at_end": 0,
             **{f"retention_{m}mo": np.nan for m in RETENTION_MONTHS}}
 
 
@@ -61,10 +68,11 @@ def _qc_flags(row: dict, max_life_months: int) -> str:
     ratio = row["forecast_vs_recent"]
     if ratio > FORECAST_JUMP_FACTOR or ratio < 1 / FORECAST_JUMP_FACTOR:
         flags.append(f"forecast starts at {ratio:.2f}x recent rate")
-    if row["n_partial_months"]:
-        flags.append(f"{row['n_partial_months']} partial month(s) excluded from log R²")
     if row["b_at_cap"]:
-        flags.append(f"b held at the {B_CAP} cap")
+        flags.append(f"b held at the {row['b_cap']} cap")
+    if row["curtailed_months"] >= CURTAILED_MONTHS_NOTE:
+        flags.append(f"{row['curtailed_months']} months read as curtailed (under "
+                     f"{CURTAIL_RATIO:.0%} of trend) and left out of the fit")
     if row["curtailed_months_at_end"]:
         flags.append(f"last {row['curtailed_months_at_end']} reported mo shut in or under "
                      f"{CURTAIL_RATIO:.0%} of trend; forecast assumes a return to trend, "
@@ -80,12 +88,14 @@ def _low_confidence(row: dict) -> bool:
     ratio = row["forecast_vs_recent"]
     return bool(min(row["r_squared"], row["r_squared_log"]) < R2_LOW_CONFIDENCE
                 or row["bounds_hit"]
-                or ratio > FORECAST_JUMP_FACTOR or ratio < 1 / FORECAST_JUMP_FACTOR)
+                or ratio > FORECAST_JUMP_FACTOR or ratio < 1 / FORECAST_JUMP_FACTOR
+                or row["curtailed_months_at_end"] >= CURTAILED_AT_END_LOW_CONFIDENCE)
 
 
 def run(econ_limit_bpm: float = ECON_LIMIT_BPM,
         dmin_annual: float = DMIN_ANNUAL,
         max_life_months: int = MAX_LIFE_MONTHS,
+        b_cap: float = B_CAP,
         write: bool = True) -> pd.DataFrame:
     """Fit, forecast and cluster every well; write the results unless write=False."""
     prod = load_production(
@@ -108,6 +118,7 @@ def run(econ_limit_bpm: float = ECON_LIMIT_BPM,
         fit, _ = fit_decline(
             fit_df["oil_bbl"].to_numpy(),
             qi_max=float(fit_df["oil_bbl"].max()) if len(fit_df) else None,
+            b_cap=b_cap,
         )
         row = {
             "api8": int(api8),
@@ -129,6 +140,7 @@ def run(econ_limit_bpm: float = ECON_LIMIT_BPM,
             # Forecast months left before the well reaches the total-life cap.
             "forecast_month_cap": max(max_life_months - (last_mop - first_mop + 1), 0),
             "cum_oil_bbl": cum,
+            "b_cap": float(b_cap),
             **FIT_COLS,
             **{k: v for k, v in fit.items() if k != "status"},
             "status": fit["status"],

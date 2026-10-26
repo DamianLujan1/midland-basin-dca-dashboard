@@ -71,8 +71,11 @@ def data_note(results: pd.DataFrame, html: bool = False) -> str:
 def methodology(results: pd.DataFrame) -> str:
     dmin, econ, cap = _assumptions(results)
     n_clusters = results["cluster_id"].nunique()
-    return ("Methodology: Arps hyperbolic decline fit from peak rate (zero months excluded, "
-            f"robust soft-L1 loss), {dmin:.0%}/yr terminal decline, EUR to "
+    b_cap = float(results.iloc[0].get("b_cap", 1.5))
+    return ("Methodology: Arps hyperbolic decline fit from peak rate on producing time "
+            "(shut-in months and months under 50% of trend count only their producing "
+            f"fraction and are left out of the fit), b ≤ {b_cap:g}, robust soft-L1 loss; "
+            f"{dmin:.0%}/yr terminal decline, EUR to "
             f"{econ:,.0f} bbl/mo economic limit within a {cap // 12}-yr well life · "
             f"k-means (k={n_clusters}) on decline shape (rate kept after 1 and 3 producing "
             "years). Technical estimates, not SPE PRMS reserves.")
@@ -100,6 +103,8 @@ def well_detail(row) -> dict:
         "Lease first reported": _month(row["lease_first_reported"]),
         "Last reported month": _month(row["last_reported"]),
         "History (mo)": str(int(row["months_history"])),
+        "Downtime since peak (mo)": fmt(row["downtime_months"], ".1f"),
+        "Curtailed months left out of fit": fmt(row["curtailed_months"], ".0f"),
         "Cum oil (bbl)": fmt(row["cum_oil_bbl"], ",.0f"),
         "qi (bbl/mo)": fmt(row["qi"], ",.0f"),
         "Di annual (nom)": fmt(row["Di_annual"], ".0%"),

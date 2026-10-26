@@ -46,11 +46,15 @@ def test_horizons_that_disagree_are_both_named():
                                       "Shallow decline"}
 
 
-def test_bound_stuck_well_does_not_set_the_name():
-    res = _results()
-    res.loc[0, ["retention_12mo", "bounds_hit"]] = [0.95, "Di"]  # one odd, bound-stuck fit
-    assert set(cluster_wells(res, n_clusters=3)["cluster"]) >= {
-        "Steep decline", "Moderate decline", "Shallow decline"}
+def test_bound_stuck_well_is_left_out_of_the_naming_centroid():
+    from src.clustering import _naming_centroids
+    ok = _results(((0.6, 0.4), (0.2, 0.1))).iloc[:10].reset_index(drop=True)
+    labels = np.array([0] * 5 + [1] * 5)
+    ok.loc[0, ["retention_12mo", "bounds_hit"]] = [0.95, "Di"]
+    cent = _naming_centroids(ok, labels, 2)
+    assert cent[0, 0] == pytest.approx(ok.loc[1:4, "retention_12mo"].mean())
+    ok.loc[0, "bounds_hit"] = ""
+    assert _naming_centroids(ok, labels, 2)[0, 0] > cent[0, 0] + 0.05
 
 
 def test_does_not_mutate_input_and_reclustering_is_safe():
@@ -88,6 +92,8 @@ def test_k_chosen_by_silhouette():
     assert out.loc[out["status"] == "ok", "cluster"].nunique() == 2
     k, scores = choose_k(two)
     assert k == 2 and scores[2] == max(scores.values())
+    k3, scores3 = choose_k(_results(((0.7, 0.5), (0.35, 0.18), (0.12, 0.05))))
+    assert k3 == 3 and scores3[3] == max(scores3.values())
 
 
 def test_low_confidence_wells_do_not_move_boundaries():
@@ -101,6 +107,8 @@ def test_low_confidence_wells_do_not_move_boundaries():
     kept = out[~out["api8"].isin(res.loc[extreme, "api8"])].set_index("api8")["cluster"]
     pd.testing.assert_series_equal(kept, clean.set_index("api8")["cluster"])
     assert (out["cluster"] != "Not fitted").sum() == len(res) - 1
+    extremes = out.set_index("api8").loc[res.loc[extreme, "api8"], "cluster"]
+    assert list(extremes) == ["Shallow decline", "Steep decline"]
 
 
 def test_stability_is_high_for_well_separated_groups():

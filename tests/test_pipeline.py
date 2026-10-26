@@ -17,6 +17,7 @@ def results(tmp_path_factory):
     mp = pytest.MonkeyPatch()
     mp.setattr(pipeline, "RESULTS", str(out))
     mp.setattr(pipeline, "RESULTS_CSV", str(out / "results.csv"))
+    mp.setattr(pipeline, "TYPE_CURVE_CSV", str(out / "type_curve.csv"))
     res = pipeline.run()
     yield res
     mp.undo()
@@ -105,9 +106,10 @@ def test_fitted_curves_continuous_at_terminal_switch(results):
 
 
 def test_single_partial_month_does_not_make_a_well_low_confidence(results):
-    # GLYNN-ATCHISON 44N fits well apart from one curtailed 600-bbl month.
+    # GLYNN-ATCHISON 44N fits well apart from a curtailed 600-bbl month, which
+    # is read as downtime instead of dragging the fit.
     row = results.set_index("api8").loc[31743755]
-    assert row["n_partial_months"] >= 1
+    assert row["curtailed_months"] >= 1
     assert row["r_squared_log"] > pipeline.R2_LOW_CONFIDENCE
     assert not row["low_confidence"]
 
@@ -130,24 +132,28 @@ def test_sensitivity_run_does_not_write(tmp_path, monkeypatch):
     assert harsher["dmin_annual"].eq(0.12).all() and harsher["max_life_months"].eq(360).all()
 
 
-def test_type_curve_ignores_unreported_months_and_thin_months(prod):
-    from src.type_curve import MIN_WELLS, observed_type_curve
+def test_type_curve_ignores_unreported_months_and_stops_when_wells_drop_out(prod):
+    from src.type_curve import MIN_SHARE, observed_type_curve
     tc = observed_type_curve(prod)
-    assert (tc["well_count"] >= MIN_WELLS).all()
+    assert (tc["well_count"] >= MIN_SHARE * 30).all()
+    assert tc["month_on_production"].max() == 33  # 27 of 30 wells through month 33
     assert tc.loc[tc["well_count"] == 30, "month_on_production"].max() == 30
-    m34 = prod[prod["month_on_production"] == 34]["oil_bbl"]
-    assert tc.set_index("month_on_production").loc[34, "p50_oil_bbl"] == m34.median()
+    m31 = prod[prod["month_on_production"] == 31]["oil_bbl"]
+    assert tc.set_index("month_on_production").loc[31, "p50_oil_bbl"] == m31.median()
 
 
 def test_restart_wells_no_longer_get_flat_tails(results):
     r = results.set_index("api8")
     assert (results["b"] <= 1.5 + 1e-9).all()
-    # EPLEY-MARTIN 31E and DAVIS-LACY 31K: a single curve through a shut-in and
-    # rebound used to give b 1.84 / 2.0 and EURs of 1.04M / 0.95M bbl.
-    for api8 in (31744051, 31744055):
-        assert r.loc[api8, "b_at_cap"] and r.loc[api8, "eur_bbl"] < 800_000
-        assert r.loc[api8, "low_confidence"]  # still a poor fit; stays flagged
-        assert "b held at the 1.5 cap" in r.loc[api8, "qc_flags"]
+    # EPLEY-MARTIN 31E: one calendar-time curve through its 2023 dip and rebound
+    # gave b 1.84 and 864k bbl at the base-case assumptions. On producing time
+    # the dip is downtime and the rebound is the well resuming its trend.
+    e = r.loc[31744051]
+    assert e["b"] < 1.0 and e["eur_bbl"] < 700_000 and e["curtailed_months"] >= 5
+    assert "left out of the fit" in e["qc_flags"]
+    # DAVIS-LACY 31K (b 2.0 on the old bound, 776k): still wants b > 1.5.
+    k = r.loc[31744055]
+    assert k["b_at_cap"] and k["eur_bbl"] < 750_000 and "b held at the 1.5 cap" in k["qc_flags"]
 
 
 def test_downtime_is_bounded_by_history(results):
@@ -162,6 +168,7 @@ def test_wells_ending_shut_in_or_curtailed_are_flagged(results):
     for api8 in (31743549, 31744069):  # WELCH-COX E39V, DAVIS-LACY 31D
         assert r.loc[api8, "curtailed_months_at_end"] >= 2
         assert "confirm status" in r.loc[api8, "qc_flags"]
+        assert r.loc[api8, "low_confidence"]
 
 
 def test_clusters_are_named_by_shape_and_agree_with_retention(results):

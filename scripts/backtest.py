@@ -1,10 +1,17 @@
-"""Hindcast backtest of the decline fit (prints a Markdown table).
+"""Hindcast backtest of the decline fit (prints Markdown tables).
 
 For each holdout H, every well is refitted with its last H reported months
 hidden, and the fitted curve's volume over those months is compared with what
-the well actually produced (producing months only). The current method
-(src.arps.fit_decline: producing-time clock, b <= 1.5) is compared with the
-earlier one-curve fit in calendar time with b up to 2.0.
+the well actually produced (producing months only). Four variants separate
+the two parts of the current method (src.arps.fit_decline):
+
+    earlier       one curve on calendar time, b up to 2.0 (the earlier method)
+    b cap only    calendar time, b <= 1.5
+    clock only    producing-time clock, b up to 2.0
+    current       producing-time clock, b <= 1.5
+
+The variants and their settings were chosen on these same 30 wells, so the
+confidence intervals are optimistic, and the 12- and 18-month windows overlap.
 
 Run:  python scripts/backtest.py   (from the repo root)
 """
@@ -14,47 +21,48 @@ import os
 import sys
 
 import numpy as np
-from scipy.optimize import curve_fit
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.arps import F_SCALE, LOSS, fit_decline, hyperbolic_rate  # noqa: E402
+from src.arps import B_CAP, fit_decline, fit_hyperbolic, hyperbolic_rate  # noqa: E402
 from src.data_loader import fitting_series, load_production  # noqa: E402
 from src.pipeline import DATA  # noqa: E402
 
 HOLDOUTS = (6, 12, 18)
 
 
-def calendar_fit(series):
-    """Earlier method: positive months on calendar time since peak, b <= 2.0.
-    Returns (qi, Di, b, t of the first held-out month)."""
-    pos = series[series["oil_bbl"] > 0]
-    if len(pos) < 12:
-        return None
-    t, q = pos["t"].to_numpy(float), pos["oil_bbl"].to_numpy(float)
-
-    def model(tt, log_qi, Di, b):
-        return np.log(hyperbolic_rate(tt, np.exp(log_qi), Di, b))
-
-    try:
-        p, _ = curve_fit(model, t, np.log(q), p0=[np.log(q.max()), 0.15, 1.0],
-                         bounds=([np.log(10), 0.005, 0.05], [np.log(q.max()), 0.80, 2.0]),
-                         maxfev=20000, loss=LOSS, f_scale=F_SCALE)
-    except (RuntimeError, ValueError):
-        return None
-    return float(np.exp(p[0])), float(p[1]), float(p[2]), float(series["t"].iloc[-1] + 1)
+def calendar(b_cap):
+    """One curve on calendar months since the peak, positive months only."""
+    def method(series):
+        fit = fit_hyperbolic(series["t"].to_numpy(float), series["oil_bbl"].to_numpy(),
+                             qi_max=float(series["oil_bbl"].max()), b_cap=b_cap)
+        if fit["status"] != "ok":
+            return None
+        return fit["qi"], fit["Di_monthly"], fit["b"], float(series["t"].iloc[-1] + 1)
+    return method
 
 
-def current_fit(series):
-    fit, _ = fit_decline(series["oil_bbl"].to_numpy(), qi_max=float(series["oil_bbl"].max()))
-    if fit["status"] != "ok":
-        return None
-    return fit["qi"], fit["Di_monthly"], fit["b"], fit["producing_months"]
+def producing(b_cap):
+    def method(series):
+        fit, _ = fit_decline(series["oil_bbl"].to_numpy(),
+                             qi_max=float(series["oil_bbl"].max()), b_cap=b_cap)
+        if fit["status"] != "ok":
+            return None
+        return fit["qi"], fit["Di_monthly"], fit["b"], fit["producing_months"]
+    return method
+
+
+METHODS = {
+    "earlier": calendar(2.0),
+    "b cap only": calendar(B_CAP),
+    "clock only": producing(2.0),
+    "current": producing(B_CAP),
+}
 
 
 def errors(prod, method, holdout):
     """Held-out volume error per well: forecast / actual - 1."""
-    out = []
+    out = {}
     for api8, w in prod.groupby("api8"):
         cut = w["month_on_production"].max() - holdout
         series = fitting_series(w[w["month_on_production"] <= cut], api8)
@@ -65,28 +73,40 @@ def errors(prod, method, holdout):
         qi, Di, b, t_next = fit
         # Forecast months count as full producing months from the first held-out month.
         t = t_next + (test["month_on_production"] - (cut + 1)).to_numpy(float)
-        out.append((api8, hyperbolic_rate(t, qi, Di, b).sum() / test["oil_bbl"].sum() - 1))
-    return dict(out)
+        out[api8] = hyperbolic_rate(t, qi, Di, b).sum() / test["oil_bbl"].sum() - 1
+    return out
+
+
+def paired(a, b, rng):
+    """Mean change in absolute error b - a over common wells, with a 90% bootstrap CI."""
+    wells = sorted(set(a) & set(b))
+    d = np.abs([b[w] for w in wells]) - np.abs([a[w] for w in wells])
+    boot = [rng.choice(d, len(d)).mean() for _ in range(5000)]
+    lo, hi = np.percentile(boot, [5, 95])
+    return f"{d.mean():+.1%} ({lo:+.1%} to {hi:+.1%})"
 
 
 def main() -> None:
     prod = load_production(
         os.path.join(DATA, "martin_selected_30_monthly_production_normalized.csv"))
+    errs = {h: {name: errors(prod, m, h) for name, m in METHODS.items()} for h in HOLDOUTS}
     rng = np.random.default_rng(0)
-    print("| Holdout | Wells | Mean abs. volume error, earlier → current | "
-          "Paired change (90% CI) | Median bias, earlier → current |")
-    print("|---|---|---|---|---|")
+
+    print("Mean absolute held-out volume error (median bias):\n")
+    print("| Holdout | Wells | " + " | ".join(METHODS) + " |")
+    print("|---|---|" + "---|" * len(METHODS))
     for h in HOLDOUTS:
-        old, new = errors(prod, calendar_fit, h), errors(prod, current_fit, h)
-        wells = sorted(set(old) & set(new))
-        e_old = np.array([old[w] for w in wells])
-        e_new = np.array([new[w] for w in wells])
-        d = np.abs(e_new) - np.abs(e_old)
-        boot = [rng.choice(d, len(d)).mean() for _ in range(5000)]
-        lo, hi = np.percentile(boot, [5, 95])
-        print(f"| {h} months | {len(wells)} | {np.abs(e_old).mean():.1%} → "
-              f"{np.abs(e_new).mean():.1%} | {d.mean():+.1%} ({lo:+.1%} to {hi:+.1%}) | "
-              f"{np.median(e_old):+.1%} → {np.median(e_new):+.1%} |")
+        cells = [f"{np.mean(np.abs(list(e.values()))):.1%} ({np.median(list(e.values())):+.1%})"
+                 for e in errs[h].values()]
+        print(f"| {h} months | {len(errs[h]['current'])} | " + " | ".join(cells) + " |")
+
+    print("\nPaired change in absolute error, current minus each variant (90% CI):\n")
+    others = [n for n in METHODS if n != "current"]
+    print("| Holdout | " + " | ".join(f"vs {n}" for n in others) + " |")
+    print("|---|" + "---|" * len(others))
+    for h in HOLDOUTS:
+        print(f"| {h} months | " + " | ".join(
+            paired(errs[h][n], errs[h]["current"], rng) for n in others) + " |")
 
 
 if __name__ == "__main__":

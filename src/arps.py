@@ -23,9 +23,9 @@ import numpy as np
 from scipy.optimize import curve_fit
 
 # Fit bounds: (log qi, Di monthly nominal, b). qi's upper bound is set per fit.
-# b is capped at 1.5, the plausible upper end for Midland Basin horizontals
-# with a terminal decline; without the cap a dip-and-rebound history can drive
-# b to ~2 and produce a decades-long flat tail.
+# b is capped at 1.5 by default -- an analog-based upper end for Midland Basin
+# horizontals with a terminal decline, not a value fitted to this data; without
+# a cap a dip-and-rebound history can drive b to ~2 and a decades-long flat tail.
 DI_BOUNDS = (0.005, 0.80)
 B_MIN = 0.05
 B_CAP = 1.5
@@ -48,11 +48,13 @@ PARTIAL_MONTH_RATIO = 0.10
 
 # Producing-time clock. Monthly volumes carry no days-on, so a month producing
 # under CURTAIL_RATIO of the fitted trend is taken to have produced for only
-# q / q_trend of the month (a zero month for none of it). The fit and the clock
-# are updated alternately; CLOCK_PASSES bounds the iteration (on a few wells a
-# month sitting at the threshold flips between passes, moving EUR by ~1-3%).
+# q / q_trend of the month (a zero month for none of it). Such a month's volume
+# says nothing about the trend beyond that, so like a zero month it is left out
+# of the fit. The fit and the clock are updated alternately until the clock
+# moves by less than CLOCK_TOL months (at most MAX_PASSES passes).
 CURTAIL_RATIO = 0.5
-CLOCK_PASSES = 3
+CLOCK_TOL = 1e-3
+MAX_PASSES = 10
 
 
 # ----------------------------------------------------------------------------
@@ -89,7 +91,7 @@ def terminal_rate(
 # Fitting
 # ----------------------------------------------------------------------------
 def fit_hyperbolic(
-    t: np.ndarray, q: np.ndarray, qi_max: float | None = None
+    t: np.ndarray, q: np.ndarray, qi_max: float | None = None, b_cap: float = B_CAP
 ) -> dict:
     """Fit (qi, Di, b) to observed monthly rates via robust nonlinear least squares.
 
@@ -117,10 +119,10 @@ def fit_hyperbolic(
     def model_log(tt, log_qi, Di, b):
         return np.log(hyperbolic_rate(tt, np.exp(log_qi), Di, b))
 
-    p0 = [np.log(q.max()), 0.15, min(1.0, B_CAP)]
+    p0 = [np.log(q.max()), 0.15, min(1.0, b_cap)]
     qi_hi = np.log(qi_max) if qi_max else np.log(1e7)
-    bounds = ([np.log(10.0), DI_BOUNDS[0], B_BOUNDS[0]],
-              [qi_hi, DI_BOUNDS[1], B_BOUNDS[1]])
+    bounds = ([np.log(10.0), DI_BOUNDS[0], B_MIN],
+              [qi_hi, DI_BOUNDS[1], b_cap])
     try:
         popt, _ = curve_fit(
             model_log, t, log_q, p0=p0, bounds=bounds, maxfev=20000,
@@ -144,7 +146,7 @@ def fit_hyperbolic(
     r2_log = 1.0 - ss_res_log / ss_tot_log if ss_tot_log > 0 else 0.0
 
     # A parameter stuck on a bound means the data wanted more than the model
-    # allows. b at B_CAP is the deliberate cap, reported separately.
+    # allows. b at its cap is the deliberate cap, reported separately.
     bounds_hit = [name for name, hit in (
         ("Di", np.isclose(Di, DI_BOUNDS[0], rtol=1e-4) or np.isclose(Di, DI_BOUNDS[1], rtol=1e-4)),
         ("b", np.isclose(b, B_MIN, rtol=1e-4)),
@@ -163,7 +165,7 @@ def fit_hyperbolic(
         "r_squared_log": float(r2_log),
         "n_partial_months": int((~full_months).sum()),
         "bounds_hit": ",".join(bounds_hit),
-        "b_at_cap": bool(np.isclose(b, B_CAP, rtol=1e-3)),
+        "b_at_cap": bool(np.isclose(b, b_cap, rtol=1e-3)),
     }
 
 
@@ -176,48 +178,63 @@ def producing_clock(q: np.ndarray, q_trend: np.ndarray) -> tuple[np.ndarray, np.
     return frac, np.r_[0.0, np.cumsum(frac)[:-1]]
 
 
-def fit_decline(q: np.ndarray, qi_max: float | None = None) -> tuple[dict, np.ndarray]:
+def fit_decline(q: np.ndarray, qi_max: float | None = None,
+                b_cap: float = B_CAP) -> tuple[dict, np.ndarray]:
     """Fit a well on producing time.
 
     q holds one monthly volume per calendar month from the peak month onward,
     zeros included (shut-in months). The first pass counts only zero months as
-    downtime; each later pass re-estimates downtime from the previous fit (see
-    producing_clock). Returns the fit (fit_hyperbolic's dict plus
-    producing_months -- producing time at the first forecast month, i.e. its
-    start_t --, downtime_months and curtailed_months_at_end) and the producing
-    time at the start of each history month.
+    downtime and fits every producing month. Each later pass re-estimates the
+    producing fraction of every month from the previous fit (producing_clock),
+    and fits only full months, until the clock settles. If the set of curtailed
+    months cycles (a month sitting at the threshold flips back and forth), the
+    state of the cycle with the most full months is kept, i.e. the borderline
+    month counts as producing.
+
+    The returned fit, clock and producing_months always come from the same
+    pass. Returns the fit (fit_hyperbolic's dict plus producing_months --
+    producing time at the first forecast month, i.e. its start_t --,
+    downtime_months, curtailed_months and curtailed_months_at_end) and the
+    producing time at the start of each history month.
     """
     q = np.asarray(q, dtype=float)
-    frac = (q > 0).astype(float)
-    clock = np.r_[0.0, np.cumsum(frac)[:-1]]
-    for _ in range(CLOCK_PASSES):
-        fit = fit_hyperbolic(clock, q, qi_max=qi_max)
-        if fit["status"] != "ok":
-            return fit, clock
+    producing = q > 0
+
+    def fit_state(full, frac):
+        clock = np.r_[0.0, np.cumsum(frac)[:-1]]
+        return fit_hyperbolic(clock, np.where(full, q, 0.0), qi_max=qi_max, b_cap=b_cap), clock
+
+    full, frac = producing.copy(), producing.astype(float)
+    fit, clock = fit_state(full, frac)
+    if fit["status"] != "ok":
+        return fit, clock
+    states = [(full, frac)]
+    for _ in range(MAX_PASSES - 1):
         trend = hyperbolic_rate(clock, fit["qi"], fit["Di_monthly"], fit["b"])
-        frac, new_clock = producing_clock(q, trend)
-        converged = np.array_equal(new_clock, clock)
-        clock = new_clock
-        if converged:
+        new_frac, _ = producing_clock(q, trend)
+        if np.allclose(new_frac, frac, atol=CLOCK_TOL):
             break
-    full = frac >= 1.0
+        new_full = (new_frac >= 1.0) & producing
+        seen = [i for i, (m, _) in enumerate(states[:-1]) if np.array_equal(m, new_full)]
+        if seen and not np.array_equal(new_full, full):  # curtailed set cycling: settle it
+            full, frac = max(states[seen[0]:] + [(new_full, new_frac)],
+                             key=lambda s: int(s[0].sum()))
+            new_fit, new_clock = fit_state(full, frac)
+            if new_fit["status"] == "ok":
+                fit, clock = new_fit, new_clock
+            break
+        new_fit, new_clock = fit_state(new_full, new_frac)
+        if new_fit["status"] != "ok":  # too few full months left; keep the last fit
+            break
+        full, frac, fit, clock = new_full, new_frac, new_fit, new_clock
+        states.append((full, frac))
+
     fit["producing_months"] = float(frac.sum())
     fit["downtime_months"] = float(len(q) - frac.sum())
-    fit["curtailed_months_at_end"] = int(np.argmax(full[::-1])) if full.any() else len(q)
+    fit["curtailed_months"] = int((producing & (frac < 1.0)).sum())
+    at_end = frac >= 1.0
+    fit["curtailed_months_at_end"] = int(np.argmax(at_end[::-1])) if at_end.any() else len(q)
     return fit, clock
-
-
-def decline_clock(q: np.ndarray, qi: float, Di: float, b: float) -> np.ndarray:
-    """Producing time at the start of each month for a fitted curve, for plotting
-    history against the fit (same clock updates as fit_decline, fixed curve)."""
-    q = np.asarray(q, dtype=float)
-    clock = np.r_[0.0, np.cumsum((q > 0).astype(float))[:-1]]
-    for _ in range(CLOCK_PASSES):
-        _, new_clock = producing_clock(q, hyperbolic_rate(clock, qi, Di, b))
-        if np.array_equal(new_clock, clock):
-            break
-        clock = new_clock
-    return clock
 
 
 # ----------------------------------------------------------------------------

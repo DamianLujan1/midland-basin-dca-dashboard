@@ -3,16 +3,18 @@
 Same construction as the source dataset's martin_observed_type_curve.csv
 (per-month P25/P50/P75 oil, P50 gas and BOE, cumulative P50), but built from
 the cleaned production table, so the unreported trailing months are not
-counted as zero production, and months with too few wells are dropped.
+counted as zero production. It stops where fewer than MIN_SHARE of the wells
+are still reporting: beyond that the percentiles describe a shrinking, older
+subset of the cohort (here mostly one pad) rather than the cohort.
 """
 from __future__ import annotations
 
 import pandas as pd
 
-MIN_WELLS = 10  # percentiles from fewer wells are noise
+MIN_SHARE = 0.8
 
 
-def observed_type_curve(prod: pd.DataFrame, min_wells: int = MIN_WELLS) -> pd.DataFrame:
+def observed_type_curve(prod: pd.DataFrame, min_share: float = MIN_SHARE) -> pd.DataFrame:
     g = prod.assign(boe=prod["oil_bbl"] + prod["casinghead_gas_mcf"] / 6.0).groupby(
         "month_on_production")
     tc = pd.DataFrame({
@@ -23,7 +25,9 @@ def observed_type_curve(prod: pd.DataFrame, min_wells: int = MIN_WELLS) -> pd.Da
         "p50_gas_mcf": g["casinghead_gas_mcf"].median(),
         "p50_boe": g["boe"].median(),
     }).reset_index()
-    tc = tc[tc["well_count"] >= min_wells].reset_index(drop=True)
+    enough = tc["well_count"] >= min_share * prod["api8"].nunique()
+    # Keep months up to the first one that falls short, not later ones that recover.
+    tc = tc[enough.cumprod().astype(bool)].reset_index(drop=True)
     tc["cumulative_p50_oil_bbl"] = tc["p50_oil_bbl"].cumsum()
     tc["cumulative_p50_gas_mcf"] = tc["p50_gas_mcf"].cumsum()
     return tc

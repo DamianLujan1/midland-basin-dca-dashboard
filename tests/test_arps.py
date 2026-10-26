@@ -5,7 +5,6 @@ import pytest
 from src.arps import (
     B_CAP,
     _switch_time,
-    decline_clock,
     eur_bbl,
     fit_decline,
     fit_hyperbolic,
@@ -154,9 +153,42 @@ def test_forecast_accepts_fractional_start():
     assert fc[1] == pytest.approx(terminal_rate(np.array([11.4]), qi, Di, b, DMIN)[0])
 
 
-def test_decline_clock_reproduces_the_fit_clock():
+def test_returned_clock_is_the_one_the_fit_used():
     prod_t = np.arange(0, 36, dtype=float)
     q_prod = hyperbolic_rate(prod_t, 30000.0, 0.25, 0.9)
     q = np.r_[q_prod[:15], np.zeros(4), q_prod[15:]]
+    q[25] *= 0.3  # one curtailed month as well
     fit, clock = fit_decline(q, qi_max=q.max())
-    np.testing.assert_allclose(decline_clock(q, fit["qi"], fit["Di_monthly"], fit["b"]), clock)
+    frac = np.diff(np.r_[clock, fit["producing_months"]])
+    full = (frac >= 1.0) & (q > 0)
+    refit = fit_hyperbolic(clock, np.where(full, q, 0.0), qi_max=q.max())
+    for key in ("qi", "Di_monthly", "b"):
+        assert refit[key] == pytest.approx(fit[key], rel=1e-9)
+
+
+def test_curtailed_months_do_not_drag_the_trend_down():
+    # On-trend well whose last three months produced at 30% of trend: they are
+    # downtime on the clock and must not also be fitted as on-trend points.
+    prod_t = np.arange(0, 40, dtype=float)
+    q = hyperbolic_rate(prod_t, 20000.0, 0.25, 1.0)
+    q[-3:] *= 0.3
+    fit, _ = fit_decline(q, qi_max=q.max())
+    assert fit["b"] == pytest.approx(1.0, abs=0.01)
+    assert fit["curtailed_months"] == 3 and fit["curtailed_months_at_end"] == 3
+    # Each curtailed month is compared with the trend at the (paused) clock, so
+    # slightly more than 0.7 of each reads as downtime.
+    assert 2.1 <= fit["downtime_months"] <= 2.2
+
+
+def test_result_does_not_depend_on_the_pass_limit(monkeypatch):
+    import src.arps as arps
+    rng = np.random.default_rng(3)
+    t = np.arange(0, 40, dtype=float)
+    q = hyperbolic_rate(t, 25000.0, 0.3, 1.1) * np.exp(rng.normal(0, 0.15, len(t)))
+    q[[8, 9, 22, 30]] *= [0.0, 0.45, 0.52, 0.2]
+    results = []
+    for passes in (10, 11, 30):
+        monkeypatch.setattr(arps, "MAX_PASSES", passes)
+        fit, _ = fit_decline(q, qi_max=q.max())
+        results.append((fit["b"], fit["producing_months"]))
+    assert results[0] == results[1] == results[2]
