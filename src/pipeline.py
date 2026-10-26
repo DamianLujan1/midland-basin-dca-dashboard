@@ -13,8 +13,9 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.arps import eur_bbl, fit_hyperbolic, terminal_rate
-from src.clustering import choose_k, cluster_stability, cluster_summary, cluster_wells
+from src.arps import B_CAP, CURTAIL_RATIO, eur_bbl, fit_decline, terminal_rate
+from src.clustering import (RETENTION_MONTHS, choose_k, cluster_stability, cluster_summary,
+                            cluster_wells, retention)
 from src.data_loader import fitting_series, load_production, load_well_metadata
 from src.type_curve import observed_type_curve
 
@@ -43,7 +44,9 @@ RRC_DISTRICT = {1: "01", 2: "02", 3: "03", 4: "04", 5: "05", 6: "06", 7: "6E",
 
 FIT_COLS = {"qi": np.nan, "Di_monthly": np.nan, "Di_annual": np.nan, "b": np.nan,
             "r_squared": np.nan, "r_squared_log": np.nan, "n_partial_months": 0,
-            "bounds_hit": ""}
+            "bounds_hit": "", "b_at_cap": False, "producing_months": np.nan,
+            "downtime_months": np.nan, "curtailed_months_at_end": 0,
+            **{f"retention_{m}mo": np.nan for m in RETENTION_MONTHS}}
 
 
 def _qc_flags(row: dict, max_life_months: int) -> str:
@@ -60,8 +63,12 @@ def _qc_flags(row: dict, max_life_months: int) -> str:
         flags.append(f"forecast starts at {ratio:.2f}x recent rate")
     if row["n_partial_months"]:
         flags.append(f"{row['n_partial_months']} partial month(s) excluded from log R²")
-    if row["shut_in_months_at_end"]:
-        flags.append(f"shut in for last {row['shut_in_months_at_end']} reported mo")
+    if row["b_at_cap"]:
+        flags.append(f"b held at the {B_CAP} cap")
+    if row["curtailed_months_at_end"]:
+        flags.append(f"last {row['curtailed_months_at_end']} reported mo shut in or under "
+                     f"{CURTAIL_RATIO:.0%} of trend; forecast assumes a return to trend, "
+                     "confirm status")
     if row["forecast_capped"]:
         flags.append(f"forecast capped at {max_life_months // 12}-yr well life")
     return "; ".join(flags)
@@ -98,8 +105,7 @@ def run(econ_limit_bpm: float = ECON_LIMIT_BPM,
         last_mop = int(full["month_on_production"].max())
         producing = full[full["oil_bbl"] > 0]
 
-        fit = fit_hyperbolic(
-            fit_df["t"].to_numpy(),
+        fit, _ = fit_decline(
             fit_df["oil_bbl"].to_numpy(),
             qi_max=float(fit_df["oil_bbl"].max()) if len(fit_df) else None,
         )
@@ -122,24 +128,25 @@ def run(econ_limit_bpm: float = ECON_LIMIT_BPM,
             "months_history": last_mop - first_mop + 1,
             # Forecast months left before the well reaches the total-life cap.
             "forecast_month_cap": max(max_life_months - (last_mop - first_mop + 1), 0),
-            "shut_in_months_at_end": int(last_mop - producing["month_on_production"].max())
-                                     if len(producing) else int(last_mop - first_mop + 1),
             "cum_oil_bbl": cum,
             **FIT_COLS,
             **{k: v for k, v in fit.items() if k != "status"},
             "status": fit["status"],
         }
         if fit["status"] == "ok":
-            # Months since peak at the last reported month; forecast starts after.
-            peak_mop = int(fit_df["month_on_production"].iloc[0])
-            t_now = last_mop - peak_mop
+            # The forecast starts the month after the last reported month, at the
+            # producing time elapsed since the peak by then.
+            start_t = fit["producing_months"]
             row.update(eur_bbl(fit["qi"], fit["Di_monthly"], fit["b"], cum,
                                Dmin=dmin_m, econ_limit_bpm=econ_limit_bpm,
-                               max_months=row["forecast_month_cap"], start_t=t_now + 1))
-            q_next = terminal_rate(np.array([t_now + 1]), fit["qi"], fit["Di_monthly"],
+                               max_months=row["forecast_month_cap"], start_t=start_t))
+            q_next = terminal_rate(np.array([start_t]), fit["qi"], fit["Di_monthly"],
                                    fit["b"], dmin_m)[0]
             recent = producing["oil_bbl"].tail(RECENT_MONTHS).median()
             row["forecast_vs_recent"] = float(q_next / recent)
+            for m in RETENTION_MONTHS:
+                row[f"retention_{m}mo"] = float(
+                    retention(fit["qi"], fit["Di_monthly"], fit["b"], m))
         else:
             row.update({"eur_bbl": np.nan, "remaining_bbl": np.nan,
                         "cum_produced_bbl": cum, "forecast_months": 0,

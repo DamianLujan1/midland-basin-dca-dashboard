@@ -1,44 +1,56 @@
-"""Tests for decline-behavior clustering."""
+"""Tests for decline-shape clustering."""
 import numpy as np
 import pandas as pd
 import pytest
 
 from src.clustering import (choose_k, cluster_order, cluster_stability, cluster_summary,
-                            cluster_wells)
+                            cluster_wells, retention)
 
 
-def _results(groups=((6.0, 1.7), (4.0, 1.0), (1.5, 0.4))):
+def _results(groups=((0.6, 0.4), (0.4, 0.2), (0.2, 0.1))):
+    """Five wells per (rate kept after 1 yr, after 3 yr) group, plus a failed fit."""
     rng = np.random.default_rng(0)
     rows = []
-    for g, (di, b) in enumerate(groups):
+    for g, (r12, r36) in enumerate(groups):
         for i in range(5):
             rows.append({"api8": 100 * g + i, "status": "ok", "bounds_hit": "",
-                         "Di_annual": di + rng.normal(0, 0.1), "b": b + rng.normal(0, 0.03),
-                         "eur_bbl": 1e5 * (g + 1), "eur_per_1000ft": 1e4, "r_squared": 0.9})
-    rows.append({"api8": 999, "status": "failed", "Di_annual": np.nan, "b": np.nan,
-                 "eur_bbl": np.nan, "eur_per_1000ft": np.nan, "r_squared": np.nan})
+                         "retention_12mo": r12 * np.exp(rng.normal(0, 0.03)),
+                         "retention_36mo": r36 * np.exp(rng.normal(0, 0.03)),
+                         "Di_annual": 3.0, "b": 1.0, "eur_bbl": 1e5 * (g + 1),
+                         "eur_per_1000ft": 1e4, "r_squared": 0.9})
+    rows.append({"api8": 999, "status": "failed", "bounds_hit": "",
+                 "retention_12mo": np.nan, "retention_36mo": np.nan,
+                 "Di_annual": np.nan, "b": np.nan, "eur_bbl": np.nan,
+                 "eur_per_1000ft": np.nan, "r_squared": np.nan})
     return pd.DataFrame(rows)
 
 
-def test_names_describe_both_axes_and_ids_order_by_di():
+def test_retention_is_fraction_of_peak_rate_kept():
+    # Harmonic decline (b=1): q(t)/qi = 1 / (1 + Di t).
+    assert retention(1000.0, 0.25, 1.0, 12) == pytest.approx(1 / (1 + 0.25 * 12))
+    assert retention(1000.0, 0.25, 1.0, 0) == pytest.approx(1.0)
+
+
+def test_names_describe_decline_shape_and_ids_run_steep_to_shallow():
     out = cluster_wells(_results(), n_clusters=3)
-    assert cluster_order(out) == ["High Di · high b", "Mid Di · mid b", "Low Di · low b"]
-    hi = out[out["cluster"] == "High Di · high b"]
-    assert (hi["cluster_id"] == 0).all() and hi["Di_annual"].min() > 5
+    assert cluster_order(out) == ["Steep decline", "Moderate decline", "Shallow decline"]
+    steep = out[out["cluster"] == "Steep decline"]
+    assert (steep["cluster_id"] == 0).all() and steep["retention_12mo"].max() < 0.3
     assert out.loc[out["api8"] == 999, "cluster"].item() == "Not fitted"
 
 
-def test_axis_that_does_not_separate_clusters_shares_a_level():
-    # High and mid groups differ on b but not on Di: both are 'High Di'.
-    out = cluster_wells(_results(((5.0, 1.8), (4.8, 1.0), (1.5, 0.4))), n_clusters=3)
-    assert cluster_order(out) == ["High Di · high b", "High Di · mid b", "Low Di · low b"]
+def test_horizons_that_disagree_are_both_named():
+    # A and B keep the same rate after 1 yr but differ after 3 yr.
+    out = cluster_wells(_results(((0.3, 0.2), (0.3, 0.1), (0.6, 0.4))), n_clusters=3)
+    assert set(cluster_order(out)) == {"Steep year 1, moderate after", "Steep decline",
+                                      "Shallow decline"}
 
 
 def test_bound_stuck_well_does_not_set_the_name():
-    res = _results(((5.0, 1.8), (4.8, 1.0), (1.5, 0.4)))
-    res.loc[0, ["Di_annual", "bounds_hit"]] = [9.6, "Di"]  # one Di stuck on the bound
-    names = set(cluster_wells(res, n_clusters=3)["cluster"])
-    assert {"High Di · high b", "High Di · mid b"} <= names
+    res = _results()
+    res.loc[0, ["retention_12mo", "bounds_hit"]] = [0.95, "Di"]  # one odd, bound-stuck fit
+    assert set(cluster_wells(res, n_clusters=3)["cluster"]) >= {
+        "Steep decline", "Moderate decline", "Shallow decline"}
 
 
 def test_does_not_mutate_input_and_reclustering_is_safe():
@@ -67,13 +79,14 @@ def test_insufficient_data_returns_copy():
 def test_summary_counts_only_fitted_wells():
     summ = cluster_summary(cluster_wells(_results(), n_clusters=3))
     assert summ["wells"].sum() == 15
-    assert list(summ["cluster"]) == ["High Di · high b", "Mid Di · mid b", "Low Di · low b"]
+    assert list(summ["cluster"]) == ["Steep decline", "Moderate decline", "Shallow decline"]
 
 
 def test_k_chosen_by_silhouette():
-    out = cluster_wells(_results(((6.0, 1.7), (1.5, 0.4))))
+    two = _results(((0.6, 0.4), (0.2, 0.1)))
+    out = cluster_wells(two)
     assert out.loc[out["status"] == "ok", "cluster"].nunique() == 2
-    k, scores = choose_k(_results(((6.0, 1.7), (1.5, 0.4))))
+    k, scores = choose_k(two)
     assert k == 2 and scores[2] == max(scores.values())
 
 
@@ -82,13 +95,14 @@ def test_low_confidence_wells_do_not_move_boundaries():
     res["low_confidence"] = False
     extreme = res.index[:2]
     clean = cluster_wells(res.drop(extreme), n_clusters=3)
-    res.loc[extreme, ["Di_annual", "b", "low_confidence"]] = [[9.6, 2.0, True], [0.2, 0.05, True]]
+    res.loc[extreme, ["retention_12mo", "retention_36mo", "low_confidence"]] = [
+        [0.95, 0.9, True], [0.02, 0.005, True]]
     out = cluster_wells(res, n_clusters=3)
     kept = out[~out["api8"].isin(res.loc[extreme, "api8"])].set_index("api8")["cluster"]
     pd.testing.assert_series_equal(kept, clean.set_index("api8")["cluster"])
-    assert out["cluster"].notna().all() and (out["cluster"] != "Not fitted").sum() == len(res) - 1
+    assert (out["cluster"] != "Not fitted").sum() == len(res) - 1
 
 
-def test_stability_is_one_for_well_separated_groups():
-    out = cluster_wells(_results(((6.0, 1.7), (1.5, 0.4))))
+def test_stability_is_high_for_well_separated_groups():
+    out = cluster_wells(_results(((0.6, 0.4), (0.2, 0.1))))
     assert cluster_stability(out, n_boot=20) > 0.95

@@ -67,20 +67,29 @@ def well_series(prod: pd.DataFrame, api8: int) -> pd.DataFrame:
     return w.reset_index(drop=True)
 
 
-def fitting_series(prod: pd.DataFrame, api8: int, from_peak: bool = True) -> pd.DataFrame:
-    """Months usable for decline fitting: positive oil rates only.
+def fitting_series(prod: pd.DataFrame, api8: int) -> pd.DataFrame:
+    """Monthly series for decline fitting: one row per calendar month from the
+    peak-rate month to the last reported month.
 
-    Zero-rate months are treated as shut-in / non-representative and excluded
-    from the fit (they would otherwise drag the decline artificially flat).
-    By default the series starts at the peak-rate month -- standard practice
-    for shale wells, where early flush production / cleanup distorts the
-    hyperbolic fit -- and t is calendar months since the peak (peak = 0), so
-    excluded months leave gaps in t rather than shifting later months earlier.
+    Starting at the peak is standard practice for shale wells, where early
+    flush production / cleanup distorts the hyperbolic fit. Zero-rate months
+    (shut-ins) are kept -- and months without a row are added with zero oil --
+    because the producing-time clock (arps.fit_decline) must see them; the fit
+    itself uses positive months only. t is calendar months since the peak.
     """
     w = well_series(prod, api8)
-    w = w[w["oil_bbl"] > 0].reset_index(drop=True)
-    if from_peak and len(w) > 0:
-        peak_idx = int(w["oil_bbl"].idxmax())
-        w = w.iloc[peak_idx:].reset_index(drop=True)
-        w["t"] = w["month_on_production"] - int(w["month_on_production"].iloc[0])
+    producing = w[w["oil_bbl"] > 0]
+    if producing.empty:
+        return w.iloc[0:0].assign(t=0)
+    peak_mop = int(producing.loc[producing["oil_bbl"].idxmax(), "month_on_production"])
+    peak_date = producing.loc[producing["oil_bbl"].idxmax(), "date"]
+    w = (w[w["month_on_production"] >= peak_mop]
+         .set_index("month_on_production")
+         .reindex(range(peak_mop, int(w["month_on_production"].max()) + 1)))
+    w["oil_bbl"] = w["oil_bbl"].fillna(0.0)
+    w["casinghead_gas_mcf"] = w["casinghead_gas_mcf"].fillna(0.0)
+    w["api8"] = api8
+    w = w.rename_axis("month_on_production").reset_index()
+    w["t"] = w["month_on_production"] - peak_mop
+    w["date"] = [peak_date + pd.DateOffset(months=int(t)) for t in w["t"]]
     return w

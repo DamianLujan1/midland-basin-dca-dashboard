@@ -12,16 +12,20 @@ decline behavior with k-means clustering.
 ## What it does
 
 - **Automated Arps fitting** — hyperbolic decline with terminal exponential decline,
-  fit per well with `scipy` (robust log-space least squares from the peak month, qi
-  capped at the observed peak rate)
+  fit per well with `scipy` on producing time (shut-in and curtailed months do not
+  count as decline time), robust log-space least squares from the peak month, qi capped
+  at the observed peak rate, b capped at 1.5
 - **EUR & remaining reserves** — forecast from the month after the last reported month
   to a 150 bbl/month (~5 BOPD) economic limit within a 50-year well life; terminal
   decline, economic limit and well life are adjustable in the app
-- **QC flags** — low R² (linear or log space), parameters stuck on a fit bound,
-  forecasts that start far from the current producing rate, wells shut in at the last
-  report, and time-capped forecasts
-- **Decline-behavior clustering** — k-means on (log Di, b), k chosen by silhouette, to
-  group wells that decline alike (the basis for type curves and benchmarking)
+- **Backtested** — the fitting method was chosen by hindcasting held-out months
+  (`scripts/backtest.py`)
+- **QC flags** — low R² (linear or log space), parameters stuck on a fit bound, b held
+  at its cap, forecasts that start far from the current producing rate, and wells shut
+  in or curtailed at the last report
+- **Decline-shape clustering** — k-means on the share of peak rate each well keeps after
+  one and three producing years, k chosen by silhouette (the basis for type curves and
+  benchmarking)
 - **Observed type curve** — P25/P50/P75 monthly oil by month on production
 - **Interactive dashboard** — per-well history vs. fit vs. forecast chart (linear/log),
   cohort EUR ranking, type curve, cluster explorer, one-click CSV download
@@ -81,66 +85,99 @@ decline behavior with k-means clustering.
 
 ## Methodology
 
-1. **Cleaning** — trailing unreported months are dropped (see above); zero-rate months
-   are treated as shut-in and excluded from fitting; the fit starts at each well's
-   peak-rate month (standard shale practice — flush production distorts early decline).
-2. **Arps fit** — `q(t) = qi / (1 + b·Di·t)^(1/b)` with `t` = calendar months since the
-   peak month (peak = 0, shut-in gaps kept), fit in log space via
-   `scipy.optimize.curve_fit` with a robust soft-L1 loss (`f_scale` 0.3) so a single
-   partial or restart month cannot dominate the fit; bounds `Di ∈ [0.005, 0.80]/mo`,
-   `b ∈ [0.05, 2.0]`, `qi ≤ observed peak`. Once instantaneous decline falls to the
-   terminal rate Dmin, the forecast switches to exponential decline.
-3. **EUR** — cumulative produced + forecast from the month after the last reported
-   month to the economic limit, within a maximum total well life counted from first
-   production. Base case: Dmin 8%/yr nominal, 150 bbl/mo (~5 BOPD), 50-year life — see
-   *Forecast assumptions* below.
-4. **Clustering** — k-means on standardized (log Di, b) — Di spans more than an order of
-   magnitude, so its log is the natural scale. The model is fitted on wells that are not
-   low-confidence and the rest are assigned to the nearest cluster, so a few poor fits
-   cannot move the boundaries; k is chosen from 2–4 by silhouette score, and the
-   pipeline reports a bootstrap stability score (adjusted Rand index) for the result.
-   Clusters are named by where they sit on each axis (e.g. "High Di · high b"); clusters
-   within 20% of each other on an axis share that axis's level, and wells with a
-   parameter stuck on a fit bound are left out of the naming centroids. Di alone is
-   misleading, because a high-Di well with a high b flattens quickly and can
-   out-produce a low-Di, near-exponential well.
-5. **QC** — every fit carries R² in linear space and in log space (partial months
-   producing under 10% of the fitted rate are left out of the log R² and counted
-   separately). A well is **low-confidence** when either R² < 0.6, Di or b sits on a
-   fit bound, or the first forecast month is more than 1.35× above or below the median
+1. **Cleaning** — trailing unreported months are dropped (see above). The fit starts
+   at each well's peak-rate month (standard shale practice — flush production distorts
+   early decline) and uses positive months only; zero months are kept as shut-ins for
+   the decline clock.
+2. **Decline clock** — a well does not deplete while it is shut in, so decline time is
+   *producing* time, not calendar time. Monthly volumes carry no days-on, so a month
+   producing under 50% of the fitted trend is counted as producing only `q / q_trend`
+   of the month (a zero month for none of it), and the fit and the clock are updated
+   alternately (up to 3 passes). Without this, a well that is shut in and then
+   rebounds is fitted as a much flatter decline.
+3. **Arps fit** — `q(t) = qi / (1 + b·Di·t)^(1/b)` with `t` = producing months since
+   the peak month, fit in log space via `scipy.optimize.curve_fit` with a robust
+   soft-L1 loss (`f_scale` 0.3) so a single partial or restart month cannot dominate;
+   bounds `Di ∈ [0.005, 0.80]/mo`, `b ∈ [0.05, 1.5]` (1.5 is the plausible upper end for
+   Midland Basin horizontals with a terminal decline), `qi ≤ observed peak`. Once the
+   instantaneous decline falls to the terminal rate Dmin, the forecast switches to
+   exponential decline.
+4. **EUR** — cumulative produced + forecast from the month after the last reported
+   month (each forecast month a full producing month) to the economic limit, within a
+   maximum total well life counted from first production. Base case: Dmin 8%/yr
+   nominal, 150 bbl/mo (~5 BOPD), 50-year life — see *Forecast assumptions* below.
+5. **Clustering** — k-means on the log of the share of peak rate the fitted decline
+   keeps after 12 and 36 producing months. That is the decline shape type curves are
+   about, and unlike Di or b on their own it is well determined: a fit can trade Di
+   against b without changing the curve much, which made clusters on (Di, b) unstable.
+   The model is fitted on wells that are not low-confidence (the rest are assigned to
+   the nearest cluster, so a few poor fits cannot move the boundaries), k is chosen
+   from 2–4 by silhouette score, and the pipeline reports a bootstrap stability score
+   (adjusted Rand index). Clusters are named from their shape ("Steep decline", or
+   "Steep year 1, moderate after" when the two horizons disagree).
+6. **QC** — every fit carries R² in linear space and in log space on its own decline
+   clock (partial months producing under 10% of the fitted rate are left out of the
+   log R² and counted separately). A well is **low-confidence** when either R² < 0.6,
+   Di or b sits on a fit bound (b at its 1.5 cap does not count — that is the cap
+   working), or the first forecast month is more than 1.35× above or below the median
    of its last 6 producing months; low-confidence wells get hollow markers on the
-   cluster chart. Partial months, a shut-in at the last report and forecasts that hit
-   the 50-year cap are listed in the `qc_flags` column and the per-well QC warning, but
-   do not make a well low-confidence on their own.
+   cluster chart. Partial months, b held at the cap, wells shut in or curtailed at the
+   last report ("confirm status": the forecast assumes a return to trend) and
+   forecasts that hit the life cap are listed in the `qc_flags` column and the
+   per-well QC warning.
+
+### How the fitting method was chosen
+
+Five candidate fixes for wells that dip and rebound mid-life (restart segmentation, a
+b cap, recency weighting, rate-time matching, and the producing-time clock with a b
+cap) were each scored by hindcasting: refit every well with its last 6, 12 or 18
+reported months hidden and compare the forecast with what it actually produced. The
+producing-time clock with b ≤ 1.5 was the only candidate that was significantly more
+accurate than the earlier method (calendar time, b up to 2.0) at 12–18 months while
+staying even at shorter horizons (checked from 3 to 24 months).
+`python scripts/backtest.py` reproduces the comparison:
+
+| Holdout | Wells | Mean abs. volume error, earlier → current | Paired change (90% CI) | Median bias, earlier → current |
+|---|---|---|---|---|
+| 6 months | 30 | 17.4% → 17.6% | +0.2% (-0.5% to +1.0%) | -4.2% → -4.7% |
+| 12 months | 30 | 26.6% → 23.5% | -3.1% (-5.6% to -0.9%) | +10.6% → +7.7% |
+| 18 months | 25 | 23.4% → 21.4% | -2.0% (-3.6% to -0.7%) | +5.3% → +3.6% |
+
+The gain is real but modest: about 10% less held-out error at 12–18 months, less
+over-forecasting, and no change at 6 months. With 30 wells, these are the honest
+error bars on a one-year forecast.
 
 ### Findings from this cohort
 
 Computed from `results/midland_basin_dca_results.csv` (`python -m src.pipeline` prints
 the headline numbers and the cluster table):
 
-- Mean b-factor **0.97** (median 0.94; 12 of 30 wells above 1), mean nominal initial
-  decline **~385%/yr** (median 387%/yr) — classic steep shale decline from flush
-  production.
-- Mean EUR **~517,000 bbl** per well (median ~522,000; range ~169k–891k bbl).
-- Mean fit R² **0.88** (median 0.93); all 30 wells have R² > 0.6, but only 26 of 30 in
-  log space, which also scores the late-life tail.
-- **8 of 30 wells are low-confidence, including the #2 and #5 EUR wells**
-  (EPLEY-MARTIN 31E, 864k bbl; DAVIS-LACY 31K, 776k bbl). Both rebound after a
-  mid-life curtailment (31E fell to 271 bbl in one month; 31K to 3,208 and 1,583 bbl),
-  and a single hyperbolic through the rebound gives a very flat tail (b 1.84 and 2.0).
-  Treat the top of the EUR ranking with caution.
+- Mean b-factor **0.92** (median 0.93; 10 of 30 wells above 1, 5 held at the 1.5 cap),
+  mean nominal initial decline **~364%/yr** (median 375%/yr) — classic steep shale
+  decline from flush production.
+- Mean EUR **~504,000 bbl** per well (median ~507,000; range ~169k–877k bbl).
+- 27 of 30 wells show more than half a month of estimated downtime since peak (median
+  0.8 months; the most is WELCH-COX E39V, 6.2 months of shut-ins and curtailments).
+- Mean fit R² **0.88** (median 0.935); 29 of 30 wells have R² > 0.6, 26 of 30 in log
+  space, which also scores the late-life tail.
+- **7 of 30 wells are low-confidence, including the #2 EUR well** (EPLEY-MARTIN 31E,
+  784k bbl). It fell to 271 bbl in one month and then rebounded far above its earlier
+  trend; even on producing time one curve fits it poorly (log R² 0.44) and its b sits
+  on the cap. DAVIS-LACY 31K (#7, 681k) is similar. Treat both with caution.
+- DAVIS-LACY 31D (~80 bbl/mo in its last three months) and WELCH-COX E39V (shut in for
+  its last two reported months) are forecast as returning to trend; confirm their
+  status before relying on their remaining volumes.
 - No forecast reaches the 50-year life cap under the base case.
-- Two clusters along the Di–b trend. k=2 is chosen by silhouette (0.52 vs 0.44 for
-  k=3) and is stable under bootstrap resampling (adjusted Rand index 0.84; the earlier
-  k=3 split scored ~0.6, i.e. it changed with the sample):
+- Two decline-shape clusters. k=2 is chosen by silhouette (0.57 vs 0.49 for k=3) and
+  is stable under bootstrap resampling (adjusted Rand index 0.91):
 
-  | Cluster | Wells | Mean b | Mean Di (nom.) | Mean EUR (bbl) | Mean EUR / 1,000 ft |
-  |---|---|---|---|---|---|
-  | High Di · high b | 20 | 1.22 | 498%/yr | 571,000 | 57,000 |
-  | Low Di · low b | 10 | 0.47 | 158%/yr | 408,000 | 41,000 |
+  | Cluster | Wells | Peak rate kept after 1 yr / 3 yr | Mean b | Mean Di (nom.) | Mean EUR (bbl) | Mean EUR / 1,000 ft |
+  |---|---|---|---|---|---|---|
+  | Steep decline | 15 | 17% / 6% | 0.92 | 487%/yr | 467,000 | 47,000 |
+  | Shallow decline | 15 | 32% / 13% | 0.93 | 242%/yr | 541,000 | 54,000 |
 
-  The high-Di/high-b cluster has the higher EUR per 1,000 ft of lateral; 5 of its 20
-  wells are low-confidence.
+  The two clusters have the same mean b; what separates them is how fast the first
+  years decline. 2 of the steep wells and 5 of the shallow ones are low-confidence.
 
 ### Forecast assumptions
 
@@ -153,12 +190,12 @@ reproduces this table:
 
 | Case | Dmin (nom./yr) | Econ. limit (bbl/mo) | Max life (yr) | Mean EUR (bbl) | Median EUR (bbl) | vs base |
 |---|---|---|---|---|---|---|
-| Base case | 8.0% | 150 | 50 | 516,633 | 522,138 | +0.0% |
-| Optimistic tail (Dmin 5%) | 5.0% | 150 | 50 | 562,213 | 525,907 | +8.8% |
-| Conservative tail (Dmin 10%) | 10.0% | 150 | 50 | 493,481 | 503,112 | -4.5% |
-| Higher economic limit (250 bbl/mo) | 8.0% | 250 | 50 | 503,913 | 507,174 | -2.5% |
-| 30-year well life | 8.0% | 150 | 30 | 507,428 | 517,380 | -1.8% |
-| Source dataset's QC assumptions | 9.6% | 250 | 30 | 486,453 | 492,227 | -5.8% |
+| Base case | 8.0% | 150 | 50 | 504,301 | 507,387 | +0.0% |
+| Optimistic tail (Dmin 5%) | 5.0% | 150 | 50 | 542,881 | 530,236 | +7.7% |
+| Conservative tail (Dmin 10%) | 10.0% | 150 | 50 | 484,414 | 503,338 | -3.9% |
+| Higher economic limit (250 bbl/mo) | 8.0% | 250 | 50 | 491,606 | 495,402 | -2.5% |
+| 30-year well life | 8.0% | 150 | 30 | 496,780 | 506,539 | -1.5% |
+| Source dataset's QC assumptions | 9.6% | 250 | 30 | 477,204 | 493,201 | -5.4% |
 
 ### Limitations
 
@@ -167,11 +204,14 @@ reproduces this table:
 - Economic limit, terminal decline and well life are assumptions; EURs are technical
   estimates, not SPE PRMS reserves. See *Forecast assumptions* for how much they move
   EUR.
-- One hyperbolic segment per well: wells whose rate dips and then rebounds are not
-  re-fitted from the restart, which inflates b. That explains the high-b
-  low-confidence wells (e.g. EPLEY-MARTIN 31E, DAVIS-LACY 31K); the other flags are b
-  pinned at its lower bound, a weak log-space fit, or a forecast that starts well away
-  from the current producing rate.
+- For the 5 wells held at b = 1.5, b is set by the cap, not the data, so their EURs
+  carry that assumption (a lower cap lowers them).
+- Downtime is inferred from the fit because the data has no days-on, so a permanent
+  loss of productivity below 50% of trend would be read as downtime; the "confirm
+  status" flag marks wells where this matters at the end of history.
+- One curve per well: a well whose rebound is a genuine re-completion (EPLEY-MARTIN 31E
+  may be one) would be better forecast from the restart alone, which needs the
+  operator's confirmation.
 - Gas is reported (casinghead) but the forecast/EUR is oil-only in this version.
 
 ## Run it locally
@@ -193,7 +233,7 @@ streamlit run app.py
 
 Then open http://localhost:8501.
 
-Tests: `pip install -r requirements-dev.txt && pytest`.
+Tests: `pip install -r requirements-dev.txt && pytest`. Backtest: `python scripts/backtest.py`; assumption sensitivity: `python scripts/sensitivity.py`.
 
 ## Deploy free on Streamlit Cloud
 
@@ -231,17 +271,21 @@ midland-basin-dca-dashboard/
 │   ├── martin_observed_type_curve.csv                        # upstream artifact, unused (see Known data issues)
 │   └── martin_real_cohort_analysis_qc.json                   # upstream artifact, unused (see Known data issues)
 ├── results/
-│   └── midland_basin_dca_results.csv   # pipeline output: fits, EUR, QC flags, clusters
+│   ├── midland_basin_dca_results.csv   # pipeline output: fits, EUR, QC flags, clusters
+│   └── observed_type_curve.csv         # P25/P50/P75 by month on production
 ├── public/                # static Vercel build (generated)
 ├── scripts/
 │   ├── build_static.py    # builds public/ from src/ + data/
+│   ├── backtest.py        # hindcast of the fitting method
+│   ├── sensitivity.py     # EUR vs forecast assumptions
 │   └── template.html
 ├── src/
 │   ├── data_loader.py     # load + clean production series
 │   ├── arps.py            # Arps models, curve fitting, EUR
-│   ├── clustering.py      # k-means on (log Di, b), k by silhouette
+│   ├── clustering.py      # k-means on decline shape, k by silhouette
 │   ├── figures.py         # Plotly charts shared by both front ends
 │   ├── report.py          # captions / labels shared by both front ends
+│   ├── type_curve.py      # observed P25/P50/P75 type curve
 │   └── pipeline.py        # end-to-end: python -m src.pipeline
 └── tests/                 # pytest suite
 ```

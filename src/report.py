@@ -11,6 +11,12 @@ from html import escape
 
 import pandas as pd
 
+CLUSTER_NOTE = (
+    "Wells grouped by decline shape: how much of its peak rate each well's fitted decline "
+    "keeps after one and three producing years — the basis for type curves and "
+    "benchmarking. The number of groups is chosen by silhouette score. Hollow markers are "
+    "low-confidence fits; they are assigned to the nearest group but do not shape it.")
+
 SOURCE_REPO = "Dansaad2020/ai-ml-dca-permian"
 SOURCE_URL = f"https://github.com/{SOURCE_REPO}"
 
@@ -68,7 +74,8 @@ def methodology(results: pd.DataFrame) -> str:
     return ("Methodology: Arps hyperbolic decline fit from peak rate (zero months excluded, "
             f"robust soft-L1 loss), {dmin:.0%}/yr terminal decline, EUR to "
             f"{econ:,.0f} bbl/mo economic limit within a {cap // 12}-yr well life · "
-            f"k-means (k={n_clusters}) on (log Di, b). Technical estimates, not SPE PRMS reserves.")
+            f"k-means (k={n_clusters}) on decline shape (rate kept after 1 and 3 producing "
+            "years). Technical estimates, not SPE PRMS reserves.")
 
 
 def well_label(row) -> str:

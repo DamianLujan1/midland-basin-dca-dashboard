@@ -5,7 +5,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 
-from src.arps import forecast_to_limit, terminal_rate
+from src.arps import decline_clock, forecast_to_limit, terminal_rate
 from src.clustering import cluster_order
 from src.data_loader import fitting_series
 
@@ -23,18 +23,15 @@ def well_figure(prod, row):
     econ_bpm = float(row["econ_limit_bpm"])
     max_months = int(row["forecast_month_cap"])
     full = prod[prod["api8"] == api8].copy()
-    fit_df = fitting_series(prod, api8)
-    peak_mop = int(fit_df["month_on_production"].iloc[0])
-    last_mop = int(full["month_on_production"].max())
-    t_now = last_mop - peak_mop
-
-    hist = full[full["month_on_production"] >= peak_mop].copy()
-    t_hist = (hist["month_on_production"] - peak_mop).to_numpy()
-    q_fit_hist = terminal_rate(t_hist, row["qi"], row["Di_monthly"], row["b"], dmin_m)
+    # History from the peak, on the producing-time clock the fit used: the
+    # fitted line pauses through shut-ins instead of declining across them.
+    hist = fitting_series(prod, api8)
+    clock = decline_clock(hist["oil_bbl"].to_numpy(), row["qi"], row["Di_monthly"], row["b"])
+    q_fit_hist = terminal_rate(clock, row["qi"], row["Di_monthly"], row["b"], dmin_m)
 
     fc = forecast_to_limit(row["qi"], row["Di_monthly"], row["b"],
                            Dmin=dmin_m, econ_limit_bpm=econ_bpm,
-                           max_months=max_months, start_t=t_now + 1)
+                           max_months=max_months, start_t=float(row["producing_months"]))
     last_date = full["date"].max()
     fc_dates = pd.date_range(last_date + pd.offsets.MonthBegin(1),
                              periods=len(fc), freq="MS")
@@ -85,22 +82,27 @@ def type_curve_figure(tc: pd.DataFrame):
 
 
 def cluster_figure(ok: pd.DataFrame):
-    """Scatter of fitted (b, Di) colored by decline cluster."""
+    """Rate kept after 1 vs 3 producing years (the clustering features),
+    colored by decline cluster."""
     order = cluster_order(ok)
     plot = ok.assign(QC=ok["low_confidence"].map({True: "Low confidence", False: "OK"}))
     fig = px.scatter(
-        plot, x="b", y="Di_annual", color="cluster", symbol="QC",
+        plot, x="retention_12mo", y="retention_36mo", color="cluster", symbol="QC",
         hover_name="lease_name",
-        hover_data={"api8": True, "eur_bbl": ":,.0f", "r_squared": ":.3f",
-                    "Di_annual": ":.0%", "b": ":.2f", "qc_flags": True},
+        hover_data={"api8": True, "eur_bbl": ":,.0f", "b": ":.2f", "Di_annual": ":.0%",
+                    "r_squared": ":.3f", "retention_12mo": ":.0%",
+                    "retention_36mo": ":.0%", "qc_flags": True},
         category_orders={"cluster": order, "QC": ["OK", "Low confidence"]},
         color_discrete_map=dict(zip(order, CLUSTER_COLORS)),
         symbol_map={"OK": "circle", "Low confidence": "circle-open"},
-        labels={"b": "b-factor", "Di_annual": "Di (nominal annual)",
+        labels={"retention_12mo": "Rate kept after 1 producing year (% of peak)",
+                "retention_36mo": "Rate kept after 3 producing years (% of peak)",
+                "b": "b-factor", "Di_annual": "Di (nominal annual)",
                 "cluster": "Cluster", "eur_bbl": "EUR (bbl)", "r_squared": "R²",
                 "qc_flags": "QC flags"},
         height=480,
     )
     fig.update_traces(marker=dict(size=11, line=dict(width=2)))
+    fig.update_xaxes(tickformat=".0%")
     fig.update_yaxes(tickformat=".0%")
     return fig

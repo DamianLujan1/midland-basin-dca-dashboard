@@ -24,8 +24,8 @@ from src.clustering import cluster_summary  # noqa: E402
 from src.data_loader import load_production  # noqa: E402
 from src.figures import cluster_figure, type_curve_figure, well_figure  # noqa: E402
 from src.pipeline import RESULTS_CSV, TYPE_CURVE_CSV, run as run_pipeline  # noqa: E402
-from src.report import (caption, data_note, fmt, methodology, well_detail,  # noqa: E402
-                        well_label, well_metrics)
+from src.report import (CLUSTER_NOTE, caption, data_note, fmt, methodology,  # noqa: E402
+                        well_detail, well_label, well_metrics)
 from src.type_curve import observed_type_curve  # noqa: E402
 
 DATA = os.path.join(ROOT, "data")
@@ -74,7 +74,8 @@ def main() -> None:
         fmt(r.r_squared, ".3f"), r.qc_flags or "—"])
         for r in ok.sort_values("eur_bbl", ascending=False).itertuples())
     summ_rows = "".join(cells([
-        s.cluster, s.wells, fmt(s.mean_b, ".2f"), fmt(s.mean_Di_annual, ".0%"),
+        s.cluster, s.wells, fmt(s.mean_retention_12mo, ".0%"),
+        fmt(s.mean_retention_36mo, ".0%"), fmt(s.mean_b, ".2f"), fmt(s.mean_Di_annual, ".0%"),
         fmt(s.mean_EUR_bbl, ",.0f"), fmt(s.total_EUR_bbl, ",.0f"),
         fmt(s.mean_EUR_per_1000ft, ",.0f"), fmt(s.mean_R2, ".3f")])
         for s in cluster_summary(results).itertuples())
@@ -96,6 +97,7 @@ def main() -> None:
         "RANK_ROWS": rank_rows,
         "SUMM_ROWS": summ_rows,
         "FOOTER": html.escape(methodology(results)),
+        "CLUSTER_NOTE": html.escape(CLUSTER_NOTE),
         "PAYLOAD": script_json(payload),
     }
 

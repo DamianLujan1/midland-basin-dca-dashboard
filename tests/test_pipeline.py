@@ -137,3 +137,36 @@ def test_type_curve_ignores_unreported_months_and_thin_months(prod):
     assert tc.loc[tc["well_count"] == 30, "month_on_production"].max() == 30
     m34 = prod[prod["month_on_production"] == 34]["oil_bbl"]
     assert tc.set_index("month_on_production").loc[34, "p50_oil_bbl"] == m34.median()
+
+
+def test_restart_wells_no_longer_get_flat_tails(results):
+    r = results.set_index("api8")
+    assert (results["b"] <= 1.5 + 1e-9).all()
+    # EPLEY-MARTIN 31E and DAVIS-LACY 31K: a single curve through a shut-in and
+    # rebound used to give b 1.84 / 2.0 and EURs of 1.04M / 0.95M bbl.
+    for api8 in (31744051, 31744055):
+        assert r.loc[api8, "b_at_cap"] and r.loc[api8, "eur_bbl"] < 800_000
+        assert r.loc[api8, "low_confidence"]  # still a poor fit; stays flagged
+        assert "b held at the 1.5 cap" in r.loc[api8, "qc_flags"]
+
+
+def test_downtime_is_bounded_by_history(results):
+    ok = results[results["status"] == "ok"]
+    span = ok["months_history"] - (ok["producing_months"] + ok["downtime_months"])
+    assert (span >= 0).all()  # producing + downtime months fit inside the record
+    assert ok["downtime_months"].between(0, ok["months_history"]).all()
+
+
+def test_wells_ending_shut_in_or_curtailed_are_flagged(results):
+    r = results.set_index("api8")
+    for api8 in (31743549, 31744069):  # WELCH-COX E39V, DAVIS-LACY 31D
+        assert r.loc[api8, "curtailed_months_at_end"] >= 2
+        assert "confirm status" in r.loc[api8, "qc_flags"]
+
+
+def test_clusters_are_named_by_shape_and_agree_with_retention(results):
+    steep = results[results["cluster"] == "Steep decline"]
+    shallow = results[results["cluster"] == "Shallow decline"]
+    assert len(steep) and len(shallow)
+    assert steep["retention_12mo"].mean() < shallow["retention_12mo"].mean()
+    assert steep["retention_36mo"].mean() < shallow["retention_36mo"].mean()

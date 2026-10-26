@@ -3,8 +3,11 @@ import numpy as np
 import pytest
 
 from src.arps import (
+    B_CAP,
     _switch_time,
+    decline_clock,
     eur_bbl,
+    fit_decline,
     fit_hyperbolic,
     forecast_to_limit,
     hyperbolic_rate,
@@ -95,3 +98,65 @@ def test_eur_is_cum_plus_forecast():
     e = eur_bbl(qi, Di, b, 123456.0, DMIN, 150.0, start_t=12)
     assert e["remaining_bbl"] == pytest.approx(fc.sum())
     assert e["eur_bbl"] == pytest.approx(123456.0 + fc.sum())
+
+
+def test_shut_in_months_do_not_count_as_decline_time():
+    # The well follows its decline in producing time and is shut in for 4
+    # months; on restart it picks up where it left off (no depletion while shut in).
+    prod_t = np.arange(0, 36, dtype=float)
+    q_prod = hyperbolic_rate(prod_t, 30000.0, 0.25, 0.9)
+    q = np.r_[q_prod[:15], np.zeros(4), q_prod[15:]]
+    fit, clock = fit_decline(q, qi_max=q.max())
+    assert fit["b"] == pytest.approx(0.9, abs=0.02)
+    assert fit["Di_monthly"] == pytest.approx(0.25, rel=0.02)
+    assert fit["downtime_months"] == pytest.approx(4.0)
+    assert fit["producing_months"] == pytest.approx(36.0)
+    assert clock[15] == clock[18] == pytest.approx(15.0)  # clock paused through the shut-in
+
+
+def test_calendar_time_fit_of_the_same_well_would_inflate_b():
+    prod_t = np.arange(0, 36, dtype=float)
+    q_prod = hyperbolic_rate(prod_t, 30000.0, 0.25, 0.9)
+    q = np.r_[q_prod[:15], np.zeros(4), q_prod[15:]]
+    cal = fit_hyperbolic(np.arange(len(q), dtype=float), q, qi_max=q.max())
+    assert cal["b"] > 1.0  # the rebound reads as a flatter tail
+
+
+def test_curtailed_month_counts_as_partly_producing():
+    t = np.arange(0, 30, dtype=float)
+    q = hyperbolic_rate(t, 30000.0, 0.25, 0.9)
+    q[20] *= 0.3  # month produced at 30% of trend
+    fit, _ = fit_decline(q, qi_max=q.max())
+    assert fit["downtime_months"] == pytest.approx(0.7, abs=0.05)
+    assert fit["curtailed_months_at_end"] == 0
+
+
+def test_curtailed_months_at_end_are_counted():
+    t = np.arange(0, 30, dtype=float)
+    q = hyperbolic_rate(t, 30000.0, 0.25, 0.9)
+    q[-3:] = [100.0, 0.0, 80.0]
+    fit, _ = fit_decline(q, qi_max=q.max())
+    assert fit["curtailed_months_at_end"] == 3
+
+
+def test_b_is_capped_and_reported_separately_from_bound_hits():
+    t = np.arange(0, 40, dtype=float)
+    q = hyperbolic_rate(t, 30000.0, 0.4, 2.0)
+    fit = fit_hyperbolic(t, q, qi_max=q.max())
+    assert fit["b"] == pytest.approx(B_CAP)
+    assert fit["b_at_cap"] and "b" not in fit["bounds_hit"]
+
+
+def test_forecast_accepts_fractional_start():
+    qi, Di, b = 30000.0, 0.3, 0.9
+    fc = forecast_to_limit(qi, Di, b, DMIN, 150.0, start_t=10.4)
+    assert fc[0] == pytest.approx(terminal_rate(np.array([10.4]), qi, Di, b, DMIN)[0])
+    assert fc[1] == pytest.approx(terminal_rate(np.array([11.4]), qi, Di, b, DMIN)[0])
+
+
+def test_decline_clock_reproduces_the_fit_clock():
+    prod_t = np.arange(0, 36, dtype=float)
+    q_prod = hyperbolic_rate(prod_t, 30000.0, 0.25, 0.9)
+    q = np.r_[q_prod[:15], np.zeros(4), q_prod[15:]]
+    fit, clock = fit_decline(q, qi_max=q.max())
+    np.testing.assert_allclose(decline_clock(q, fit["qi"], fit["Di_monthly"], fit["b"]), clock)

@@ -1,10 +1,10 @@
-"""K-means clustering of wells by decline behavior.
+"""K-means clustering of wells by decline shape.
 
-Each well is represented by its fitted Arps parameters: log of the annualized
-initial decline Di (Di spans more than an order of magnitude, so its log is
-the natural scale) and the b-factor. Wells with similar decline shapes land in
-the same cluster -- the "which wells behave alike" view that operators use to
-build type curves and benchmarking.
+Each well is represented by how much of its peak rate the fitted decline keeps
+after 12 and after 36 producing months (log of q(t)/qi). That is the decline
+shape that matters for type curves and benchmarking, and unlike Di or b on
+their own it is well determined by the data: a fit can trade Di against b
+without changing the curve much, which makes clusters on (Di, b) unstable.
 
 The model is fitted on wells whose fits are not low-confidence; low-confidence
 wells are then assigned to the nearest cluster, so a few poor fits cannot move
@@ -19,13 +19,18 @@ from sklearn.cluster import KMeans
 from sklearn.metrics import adjusted_rand_score, silhouette_score
 from sklearn.preprocessing import StandardScaler
 
-K_RANGE = (2, 3, 4)
+from src.arps import hyperbolic_rate
 
+K_RANGE = (2, 3, 4)
+RETENTION_MONTHS = (12, 36)
+FEATURES = [f"retention_{m}mo" for m in RETENTION_MONTHS]
+
+# Level words for retained rate, highest retention first.
 _LEVELS = {
-    2: ["High", "Low"],
-    3: ["High", "Mid", "Low"],
-    4: ["High", "Mid-high", "Mid-low", "Low"],
-    5: ["High", "Mid-high", "Mid", "Mid-low", "Low"],
+    2: ["Shallow", "Steep"],
+    3: ["Shallow", "Moderate", "Steep"],
+    4: ["Shallow", "Moderately shallow", "Moderately steep", "Steep"],
+    5: ["Shallow", "Moderately shallow", "Moderate", "Moderately steep", "Steep"],
 }
 
 # Clusters whose naming centroids are within this fraction of each other on an
@@ -33,12 +38,18 @@ _LEVELS = {
 SAME_LEVEL = 0.2
 
 
+def retention(qi, Di, b, months: int):
+    """Fraction of the peak-month rate the fitted hyperbolic keeps after `months`
+    producing months."""
+    return hyperbolic_rate(np.full(np.shape(qi), float(months)), qi, Di, b) / qi
+
+
 def _levels(k: int) -> list[str]:
     return _LEVELS.get(k, [f"#{i + 1}" for i in range(k)])
 
 
 def _features(df: pd.DataFrame) -> np.ndarray:
-    return np.c_[np.log(df["Di_annual"].to_numpy(float)), df["b"].to_numpy(float)]
+    return np.log(df[FEATURES].to_numpy(float))
 
 
 def _fit_mask(ok: pd.DataFrame) -> np.ndarray:
@@ -71,30 +82,32 @@ def _axis_words(values: np.ndarray) -> list[str] | None:
 
 
 def _naming_centroids(ok: pd.DataFrame, labels: np.ndarray, n_clusters: int) -> np.ndarray:
-    """Mean (Di_annual, b) per cluster, leaving out wells with a parameter on a
-    fit bound so a single bound-stuck Di cannot make a cluster look 'High Di'."""
+    """Mean retention per cluster, leaving out wells with a parameter on a fit
+    bound so a single bound-stuck fit cannot set a cluster's name."""
     clean = (ok["bounds_hit"].fillna("") == "").to_numpy() if "bounds_hit" in ok else \
         np.ones(len(ok), dtype=bool)
-    cent = np.empty((n_clusters, 2))
+    cent = np.empty((n_clusters, len(FEATURES)))
     for k in range(n_clusters):
         members = labels == k
         use = members & clean if (members & clean).any() else members
-        cent[k] = ok.loc[use, ["Di_annual", "b"]].mean().to_numpy()
+        cent[k] = ok.loc[use, FEATURES].mean().to_numpy()
     return cent
 
 
 def _cluster_names(cent: np.ndarray) -> dict:
-    """Name clusters by the axes on which they actually differ."""
+    """'Steep decline' when both horizons agree, 'Steep year 1, moderate after'
+    when they differ; a horizon that does not separate the clusters is left out."""
     n_clusters = len(cent)
-    di, b = _axis_words(cent[:, 0]), _axis_words(cent[:, 1])
+    early, late = _axis_words(cent[:, 0]), _axis_words(cent[:, 1])
     names = {}
     for k in range(n_clusters):
-        parts = [f"{words[k]} {axis}" for words, axis in ((di, "Di"), (b, "b")) if words]
-        if not parts:
+        if early and late and early[k] != late[k]:
+            names[k] = f"{early[k]} year 1, {late[k].lower()} after"
+        elif early or late:
+            names[k] = f"{(early or late)[k]} decline"
+        else:
             names[k] = f"Cluster {k + 1}"
-            continue
-        names[k] = " · ".join([parts[0]] + [p[0].lower() + p[1:] for p in parts[1:]])
-    if len(set(names.values())) < n_clusters:  # same level on both axes
+    if len(set(names.values())) < n_clusters:  # same level on both horizons
         names = {k: f"{n} ({k + 1})" for k, n in names.items()}
     return names
 
@@ -114,12 +127,9 @@ def choose_k(results: pd.DataFrame) -> tuple[int, dict]:
 def cluster_wells(results: pd.DataFrame, n_clusters: int | None = None) -> pd.DataFrame:
     """Return a copy of the per-well results table with cluster labels added.
 
-    n_clusters=None picks k by silhouette (see choose_k). cluster_id 0 is the
-    cluster with the highest Di. Clusters are named by where they sit on both
-    axes, e.g. 'High Di · high b' (an axis is left out of the name when it does
-    not separate the clusters): Di alone is misleading, because a high-Di well
-    with a high b-factor flattens quickly and can out-produce a low-Di,
-    near-exponential well.
+    Needs the FEATURES columns (see retention). n_clusters=None picks k by
+    silhouette (see choose_k). cluster_id 0 is the steepest cluster (least
+    rate kept after one year).
     """
     results = results.drop(columns=["cluster_id", "cluster"], errors="ignore")
     ok = results[results["status"] == "ok"].copy()
@@ -134,9 +144,9 @@ def cluster_wells(results: pd.DataFrame, n_clusters: int | None = None) -> pd.Da
     labels = km.predict(scaler.transform(X))
     cent = _naming_centroids(ok, labels, n_clusters)
     names = _cluster_names(cent)
-    di_rank = np.argsort(np.argsort(-cent[:, 0]))  # 0 = highest Di
+    rank = np.argsort(np.argsort(cent[:, 0]))  # 0 = least rate kept after a year
 
-    ok["cluster_id"] = di_rank[labels]
+    ok["cluster_id"] = rank[labels]
     ok["cluster"] = [names[k] for k in labels]
     results = results.merge(
         ok[["api8", "cluster_id", "cluster"]], on="api8", how="left"
@@ -170,12 +180,14 @@ def cluster_order(results: pd.DataFrame) -> list[str]:
 
 
 def cluster_summary(results: pd.DataFrame) -> pd.DataFrame:
-    """Per-cluster aggregates: well count, mean b, mean Di, mean/total EUR."""
+    """Per-cluster aggregates: well count, retention, mean b and Di, EUR."""
     ok = results[results["status"] == "ok"]
     return (
         ok.groupby(["cluster_id", "cluster"])
         .agg(
             wells=("api8", "count"),
+            mean_retention_12mo=("retention_12mo", "mean"),
+            mean_retention_36mo=("retention_36mo", "mean"),
             mean_b=("b", "mean"),
             mean_Di_annual=("Di_annual", "mean"),
             mean_EUR_bbl=("eur_bbl", "mean"),

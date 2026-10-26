@@ -64,10 +64,10 @@
 </section>
 
 <section id="clusters" class="tab">
-  <h3>Decline-behavior clusters (k-means on log Di, b)</h3>
-  <div class="cap">Wells with similar decline shapes group together — the basis for type curves and performance benchmarking. Clusters are named by their centroid's initial decline (Di) and b-factor; a high b flattens the decline, so high-b wells can have the largest EURs. Hollow markers are low-confidence fits.</div>
+  <h3>Decline-shape clusters</h3>
+  <div class="cap">{{CLUSTER_NOTE}}</div>
   <div id="clusterChart"></div>
-  <div class="scroll"><table><tr><th>Cluster</th><th>Wells</th><th>Mean b</th><th>Mean Di ann.</th><th>Mean EUR (bbl)</th><th>Total EUR (bbl)</th><th>Mean EUR/1k ft (bbl)</th><th>Mean R²</th></tr>{{SUMM_ROWS}}</table></div>
+  <div class="scroll"><table><tr><th>Cluster</th><th>Wells</th><th>Rate kept, 1 yr</th><th>Rate kept, 3 yr</th><th>Mean b</th><th>Mean Di ann.</th><th>Mean EUR (bbl)</th><th>Total EUR (bbl)</th><th>Mean EUR/1k ft (bbl)</th><th>Mean R²</th></tr>{{SUMM_ROWS}}</table></div>
 </section>
 
 <footer>Built as a freelance portfolio project · {{FOOTER}}</footer>

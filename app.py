@@ -15,8 +15,8 @@ from src.figures import cluster_figure, type_curve_figure, well_figure
 from src.pipeline import (DMIN_ANNUAL, ECON_LIMIT_BPM, MAX_LIFE_MONTHS, RESULTS_CSV,
                           load_results)
 from src.pipeline import run as run_pipeline
-from src.report import (caption, data_note, methodology, well_detail, well_label,
-                        well_metrics)
+from src.report import (CLUSTER_NOTE, caption, data_note, methodology, well_detail,
+                        well_label, well_metrics)
 from src.type_curve import observed_type_curve
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -144,20 +144,19 @@ with tab_cohort:
 
 # ----------------------------------------------------------------------------
 with tab_clusters:
-    st.subheader("Decline-behavior clusters (k-means on log Di, b)")
-    st.caption("Wells with similar decline shapes group together — the basis for "
-               "type curves and performance benchmarking. Clusters are named by their "
-               "centroid's initial decline (Di) and b-factor; a high b flattens the "
-               "decline, so high-b wells can have the largest EURs. "
-               "Hollow markers are low-confidence fits.")
+    st.subheader("Decline-shape clusters")
+    st.caption(CLUSTER_NOTE)
     st.plotly_chart(cluster_figure(ok), width="stretch")
 
     summ = cluster_summary(results)
-    summ["mean_Di_annual"] *= 100
+    for col in ("mean_Di_annual", "mean_retention_12mo", "mean_retention_36mo"):
+        summ[col] *= 100
     st.dataframe(
         summ, width="stretch", hide_index=True,
         column_config={
             "cluster": "Cluster", "wells": "Wells",
+            "mean_retention_12mo": NUM("Rate kept, 1 yr", format="%.0f%%"),
+            "mean_retention_36mo": NUM("Rate kept, 3 yr", format="%.0f%%"),
             "mean_b": NUM("Mean b", format="%.2f"),
             "mean_Di_annual": NUM("Mean Di ann.", format="%.0f%%"),
             "mean_EUR_bbl": NUM("Mean EUR (bbl)", format="%,.0f"),

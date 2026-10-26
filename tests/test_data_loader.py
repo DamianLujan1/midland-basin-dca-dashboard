@@ -54,15 +54,24 @@ def test_row_counter_month_on_production_is_rejected(tmp_path):
         load_production(_write(tmp_path, rows))
 
 
-def test_fitting_series_starts_at_peak_with_t0():
-    prod = pd.DataFrame(_well(1, [100, 900, 800, 700, 600]))
+def test_fitting_series_starts_at_peak_with_t0(tmp_path):
+    prod = load_production(_write(tmp_path, _well(1, [100, 900, 800, 700, 600])))
     w = fitting_series(prod, 1)
     assert w["oil_bbl"].iloc[0] == 900
     assert list(w["t"]) == [0, 1, 2, 3]
 
 
-def test_fitting_series_keeps_calendar_gaps_for_shut_ins():
-    prod = pd.DataFrame(_well(1, [100, 900, 800, 0, 0, 600, 500]))
+def test_fitting_series_keeps_shut_in_months_for_the_clock(tmp_path):
+    prod = load_production(_write(tmp_path, _well(1, [100, 900, 800, 0, 0, 600, 500])))
     w = fitting_series(prod, 1)
-    assert list(w["oil_bbl"]) == [900, 800, 600, 500]
-    assert list(w["t"]) == [0, 1, 4, 5]
+    assert list(w["oil_bbl"]) == [900, 800, 0, 0, 600, 500]
+    assert list(w["t"]) == [0, 1, 2, 3, 4, 5]
+
+
+def test_fitting_series_fills_months_without_a_row(tmp_path):
+    rows = _well(1, [100, 900, 800, 700, 600, 500])
+    del rows[3]  # no report for that month (month_on_production stays calendar-based)
+    prod = load_production(_write(tmp_path, rows))
+    w = fitting_series(prod, 1)
+    assert list(w["oil_bbl"]) == [900, 800, 0, 600, 500]
+    assert w["date"].is_monotonic_increasing and w["date"].iloc[2] == pd.Timestamp("2024-04-01")
