@@ -22,10 +22,11 @@ from plotly.offline import get_plotlyjs_version  # noqa: E402
 
 from src.clustering import cluster_summary  # noqa: E402
 from src.data_loader import load_production  # noqa: E402
-from src.figures import cluster_figure, well_figure  # noqa: E402
-from src.pipeline import RESULTS_CSV, run as run_pipeline  # noqa: E402
+from src.figures import cluster_figure, type_curve_figure, well_figure  # noqa: E402
+from src.pipeline import RESULTS_CSV, TYPE_CURVE_CSV, run as run_pipeline  # noqa: E402
 from src.report import (caption, data_note, fmt, methodology, well_detail,  # noqa: E402
                         well_label, well_metrics)
+from src.type_curve import observed_type_curve  # noqa: E402
 
 DATA = os.path.join(ROOT, "data")
 PUBLIC = os.path.join(ROOT, "public")
@@ -81,6 +82,7 @@ def main() -> None:
     payload = {
         "wells": dict(sorted(wells.items(), key=lambda kv: kv[1]["label"])),
         "clusterFig": json.loads(cluster_figure(ok).to_json()),
+        "typeCurveFig": json.loads(type_curve_figure(observed_type_curve(prod)).to_json()),
     }
     fitted = f"{len(ok)} wells" + (f" fitted of {len(results)}" if len(ok) < len(results) else "")
     parts = {
@@ -106,6 +108,7 @@ def main() -> None:
     with open(os.path.join(PUBLIC, "index.html"), "w", encoding="utf-8") as f:
         f.write(page)
     shutil.copy(RESULTS_CSV, os.path.join(PUBLIC, "midland_basin_dca_results.csv"))
+    shutil.copy(TYPE_CURVE_CSV, os.path.join(PUBLIC, "observed_type_curve.csv"))
     print(f"wrote public/index.html ({len(page)/1e6:.2f} MB), {len(wells)} wells")
 
 

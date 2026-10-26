@@ -58,10 +58,13 @@
     {{RANK_ROWS}}
   </table></div>
   <a class="btn" href="midland_basin_dca_results.csv" download>⬇ Download full results CSV</a>
+  <h3>Observed type curve</h3>
+  <div class="cap">Monthly oil by month on production across the cohort (P25–P75 band, P50 line); months with fewer than 10 reporting wells are omitted. <a href="observed_type_curve.csv" download>Download CSV</a></div>
+  <div id="tcChart"></div>
 </section>
 
 <section id="clusters" class="tab">
-  <h3>Decline-behavior clusters (k-means on Di, b)</h3>
+  <h3>Decline-behavior clusters (k-means on log Di, b)</h3>
   <div class="cap">Wells with similar decline shapes group together — the basis for type curves and performance benchmarking. Clusters are named by their centroid's initial decline (Di) and b-factor; a high b flattens the decline, so high-b wells can have the largest EURs. Hollow markers are low-confidence fits.</div>
   <div id="clusterChart"></div>
   <div class="scroll"><table><tr><th>Cluster</th><th>Wells</th><th>Mean b</th><th>Mean Di ann.</th><th>Mean EUR (bbl)</th><th>Total EUR (bbl)</th><th>Mean EUR/1k ft (bbl)</th><th>Mean R²</th></tr>{{SUMM_ROWS}}</table></div>
@@ -79,13 +82,16 @@ if (!hasPlotly) document.getElementById('plotlyWarn').textContent =
 function draw(id, fig){ if (hasPlotly) Plotly.react(id, fig.data, fig.layout, cfg); }
 function resize(id){ if (hasPlotly && document.getElementById(id).data) Plotly.Plots.resize(id); }
 
-let clusterDrawn = false;
+// Charts in hidden tabs are drawn the first time their tab is shown.
+const lazy = {clusters: ['clusterChart', P.clusterFig], cohort: ['tcChart', P.typeCurveFig]};
+const drawn = new Set();
 document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => {
   document.querySelectorAll('.tabs button,.tab').forEach(e => e.classList.remove('active'));
   b.classList.add('active'); document.getElementById(b.dataset.tab).classList.add('active');
-  if (b.dataset.tab === 'clusters') {
-    if (!clusterDrawn) { draw('clusterChart', P.clusterFig); clusterDrawn = true; }
-    else resize('clusterChart');
+  const chart = lazy[b.dataset.tab];
+  if (chart) {
+    if (!drawn.has(chart[0])) { draw(chart[0], chart[1]); drawn.add(chart[0]); }
+    else resize(chart[0]);
   }
   if (b.dataset.tab === 'well') resize('wellChart');
 });

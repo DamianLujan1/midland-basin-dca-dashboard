@@ -1,7 +1,7 @@
 """End-to-end pipeline: load -> clean -> fit Arps -> forecast/EUR -> cluster.
 
 Run:  python -m src.pipeline   (from the repo root)
-Writes: results/midland_basin_dca_results.csv
+Writes: results/midland_basin_dca_results.csv, results/observed_type_curve.csv
 """
 from __future__ import annotations
 
@@ -13,18 +13,22 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.arps import MAX_FORECAST_MONTHS, eur_bbl, fit_hyperbolic, terminal_rate
-from src.clustering import cluster_summary, cluster_wells
+from src.arps import eur_bbl, fit_hyperbolic, terminal_rate
+from src.clustering import choose_k, cluster_stability, cluster_summary, cluster_wells
 from src.data_loader import fitting_series, load_production, load_well_metadata
+from src.type_curve import observed_type_curve
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA = os.path.join(ROOT, "data")
 RESULTS = os.path.join(ROOT, "results")
 RESULTS_CSV = os.path.join(RESULTS, "midland_basin_dca_results.csv")
+TYPE_CURVE_CSV = os.path.join(RESULTS, "observed_type_curve.csv")
 
+# Base-case forecast assumptions (see README "Forecast assumptions").
 ECON_LIMIT_BPM = 150.0   # ~5 BOPD economic limit
-DMIN_ANNUAL = 0.05       # 5%/yr terminal decline
-N_CLUSTERS = 3
+DMIN_ANNUAL = 0.08       # 8%/yr nominal terminal decline, mid-range of the 6-10% in use
+MAX_LIFE_MONTHS = 600    # 50-year total well life, counted from first production
+N_CLUSTERS = None         # None: choose k by silhouette (clustering.choose_k)
 R2_LOW_CONFIDENCE = 0.6  # fits below this R² (linear or log) are low-confidence
 # Flag forecasts whose first month is off the recent producing rate (median of
 # the last 6 producing months, so one curtailed month does not trigger it) by
@@ -42,7 +46,7 @@ FIT_COLS = {"qi": np.nan, "Di_monthly": np.nan, "Di_annual": np.nan, "b": np.nan
             "bounds_hit": ""}
 
 
-def _qc_flags(row: dict, max_forecast_months: int) -> str:
+def _qc_flags(row: dict, max_life_months: int) -> str:
     if row["status"] != "ok":
         return f"fit {row['status']}"
     flags = []
@@ -59,7 +63,7 @@ def _qc_flags(row: dict, max_forecast_months: int) -> str:
     if row["shut_in_months_at_end"]:
         flags.append(f"shut in for last {row['shut_in_months_at_end']} reported mo")
     if row["forecast_capped"]:
-        flags.append(f"forecast capped at {max_forecast_months // 12} yr")
+        flags.append(f"forecast capped at {max_life_months // 12}-yr well life")
     return "; ".join(flags)
 
 
@@ -74,7 +78,9 @@ def _low_confidence(row: dict) -> bool:
 
 def run(econ_limit_bpm: float = ECON_LIMIT_BPM,
         dmin_annual: float = DMIN_ANNUAL,
-        max_forecast_months: int = MAX_FORECAST_MONTHS) -> pd.DataFrame:
+        max_life_months: int = MAX_LIFE_MONTHS,
+        write: bool = True) -> pd.DataFrame:
+    """Fit, forecast and cluster every well; write the results unless write=False."""
     prod = load_production(
         os.path.join(DATA, "martin_selected_30_monthly_production_normalized.csv"))
     meta = load_well_metadata(
@@ -114,6 +120,8 @@ def run(econ_limit_bpm: float = ECON_LIMIT_BPM,
             "zero_months_before_record": int(first["reported_month_on_production"]) - 1,
             "last_reported": str(int(full["cycle_year_month"].max())),
             "months_history": last_mop - first_mop + 1,
+            # Forecast months left before the well reaches the total-life cap.
+            "forecast_month_cap": max(max_life_months - (last_mop - first_mop + 1), 0),
             "shut_in_months_at_end": int(last_mop - producing["month_on_production"].max())
                                      if len(producing) else int(last_mop - first_mop + 1),
             "cum_oil_bbl": cum,
@@ -127,7 +135,7 @@ def run(econ_limit_bpm: float = ECON_LIMIT_BPM,
             t_now = last_mop - peak_mop
             row.update(eur_bbl(fit["qi"], fit["Di_monthly"], fit["b"], cum,
                                Dmin=dmin_m, econ_limit_bpm=econ_limit_bpm,
-                               max_months=max_forecast_months, start_t=t_now + 1))
+                               max_months=row["forecast_month_cap"], start_t=t_now + 1))
             q_next = terminal_rate(np.array([t_now + 1]), fit["qi"], fit["Di_monthly"],
                                    fit["b"], dmin_m)[0]
             recent = producing["oil_bbl"].tail(RECENT_MONTHS).median()
@@ -136,7 +144,7 @@ def run(econ_limit_bpm: float = ECON_LIMIT_BPM,
             row.update({"eur_bbl": np.nan, "remaining_bbl": np.nan,
                         "cum_produced_bbl": cum, "forecast_months": 0,
                         "forecast_capped": False, "forecast_vs_recent": np.nan})
-        row["qc_flags"] = _qc_flags(row, max_forecast_months)
+        row["qc_flags"] = _qc_flags(row, max_life_months)
         row["low_confidence"] = _low_confidence(row)
         rows.append(row)
 
@@ -151,10 +159,12 @@ def run(econ_limit_bpm: float = ECON_LIMIT_BPM,
     # Assumptions behind every EUR, so charts redraw forecasts consistently.
     results["econ_limit_bpm"] = float(econ_limit_bpm)
     results["dmin_annual"] = float(dmin_annual)
-    results["max_forecast_months"] = int(max_forecast_months)
+    results["max_life_months"] = int(max_life_months)
 
-    os.makedirs(RESULTS, exist_ok=True)
-    results.to_csv(RESULTS_CSV, index=False)
+    if write:
+        os.makedirs(RESULTS, exist_ok=True)
+        results.to_csv(RESULTS_CSV, index=False)
+        observed_type_curve(prod).to_csv(TYPE_CURVE_CSV, index=False)
     return results
 
 
@@ -181,11 +191,15 @@ def main() -> None:
           f"{(ok['r_squared'] > R2_LOW_CONFIDENCE).sum()}/{len(ok)} wells R^2 > {R2_LOW_CONFIDENCE}; "
           f"log-space: {(ok['r_squared_log'] > R2_LOW_CONFIDENCE).sum()}/{len(ok)}")
     print(f"low-confidence fits: {int(results['low_confidence'].sum())}; "
-          f"forecasts capped at {MAX_FORECAST_MONTHS // 12} yr: {int(ok['forecast_capped'].sum())}")
+          f"forecasts capped at {MAX_LIFE_MONTHS // 12}-yr life: {int(ok['forecast_capped'].sum())}")
     print(f"EUR range: {ok['eur_bbl'].min():,.0f} - {ok['eur_bbl'].max():,.0f} bbl")
     print(f"mean EUR: {ok['eur_bbl'].mean():,.0f} bbl")
+    _, scores = choose_k(results)
+    print(f"clusters: k={results['cluster_id'].nunique()} (silhouette by k: "
+          + ", ".join(f"{kk}: {s:.3f}" for kk, s in scores.items())
+          + f"; bootstrap stability ARI {cluster_stability(results):.2f})")
     print(cluster_summary(results).round(3).to_string(index=False))
-    print("results -> results/midland_basin_dca_results.csv")
+    print("results -> results/midland_basin_dca_results.csv, results/observed_type_curve.csv")
 
 
 if __name__ == "__main__":

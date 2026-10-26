@@ -11,10 +11,13 @@ import streamlit as st
 
 from src.clustering import cluster_summary
 from src.data_loader import load_production
-from src.figures import cluster_figure, well_figure
-from src.pipeline import RESULTS_CSV, load_results
+from src.figures import cluster_figure, type_curve_figure, well_figure
+from src.pipeline import (DMIN_ANNUAL, ECON_LIMIT_BPM, MAX_LIFE_MONTHS, RESULTS_CSV,
+                          load_results)
+from src.pipeline import run as run_pipeline
 from src.report import (caption, data_note, methodology, well_detail, well_label,
                         well_metrics)
+from src.type_curve import observed_type_curve
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.join(ROOT, "data")
@@ -37,13 +40,41 @@ def load_all(results_mtime: float):
     return prod, load_results(RESULTS_CSV)
 
 
+@st.cache_data(show_spinner="Re-forecasting all wells with these assumptions…")
+def scenario(dmin_annual: float, econ_limit_bpm: float, max_life_months: int):
+    """Results under non-base-case forecast assumptions (not written to disk)."""
+    return run_pipeline(econ_limit_bpm=econ_limit_bpm, dmin_annual=dmin_annual,
+                        max_life_months=max_life_months, write=False)
+
+
+BASE = {"dmin_pct": round(DMIN_ANNUAL * 100), "econ": int(ECON_LIMIT_BPM),
+        "life_yr": MAX_LIFE_MONTHS // 12}
+
+
+def _reset_assumptions():
+    st.session_state.update(BASE)
+
+
 # ----------------------------------------------------------------------------
 if not os.path.exists(RESULTS_CSV):
     # First run (e.g. fresh Streamlit Cloud deploy): build results.
-    from src.pipeline import run as run_pipeline
     with st.spinner("Fitting decline curves (one-time setup)…"):
         run_pipeline()
 prod, results = load_all(os.path.getmtime(RESULTS_CSV))
+
+with st.sidebar:
+    st.header("Forecast assumptions")
+    for key, value in BASE.items():
+        st.session_state.setdefault(key, value)
+    dmin_pct = st.slider("Terminal decline Dmin (%/yr, nominal)", 4, 12, key="dmin_pct")
+    econ = st.slider("Economic limit (bbl/month)", 50, 400, step=25, key="econ")
+    life_yr = st.slider("Maximum well life (years)", 20, 60, step=5, key="life_yr")
+    st.button("Reset to base case", on_click=_reset_assumptions)
+    st.caption("Fits do not change; only the forecast tail and EUR do. The static "
+               "Vercel page shows the base case.")
+if (dmin_pct, econ, life_yr) != (BASE["dmin_pct"], BASE["econ"], BASE["life_yr"]):
+    results = scenario(dmin_pct / 100, float(econ), life_yr * 12)
+    st.sidebar.info("Showing a sensitivity case, not the base case.")
 ok = results[results["status"] == "ok"].copy()
 
 st.title("🛢️ Midland Basin — Automated Decline Curve Analysis")
@@ -102,13 +133,18 @@ with tab_cohort:
             "R²": NUM(format="%.3f"),
         })
     st.download_button(
-        "⬇ Download full results CSV",
+        "⬇ Download full results CSV (current assumptions)",
         results.to_csv(index=False).encode(),
         "midland_basin_dca_results.csv", "text/csv")
 
+    st.subheader("Observed type curve")
+    st.caption("Monthly oil by month on production across the cohort (P25–P75 band, "
+               "P50 line); months with fewer than 10 reporting wells are omitted.")
+    st.plotly_chart(type_curve_figure(observed_type_curve(prod)), width="stretch")
+
 # ----------------------------------------------------------------------------
 with tab_clusters:
-    st.subheader("Decline-behavior clusters (k-means on Di, b)")
+    st.subheader("Decline-behavior clusters (k-means on log Di, b)")
     st.caption("Wells with similar decline shapes group together — the basis for "
                "type curves and performance benchmarking. Clusters are named by their "
                "centroid's initial decline (Di) and b-factor; a high b flattens the "

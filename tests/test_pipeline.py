@@ -82,7 +82,7 @@ def test_partial_month_no_longer_pins_b(results):
 def test_assumptions_and_flags_recorded(results):
     assert (results["econ_limit_bpm"] == pipeline.ECON_LIMIT_BPM).all()
     assert (results["dmin_annual"] == pipeline.DMIN_ANNUAL).all()
-    capped = results["forecast_months"] == results["max_forecast_months"]
+    capped = results["forecast_months"] == results["forecast_month_cap"]
     assert (results["forecast_capped"] == capped).all()
     assert results.loc[capped, "qc_flags"].str.contains("capped").all()
     assert (results["county"] == "MARTIN").all()
@@ -110,3 +110,30 @@ def test_single_partial_month_does_not_make_a_well_low_confidence(results):
     assert row["n_partial_months"] >= 1
     assert row["r_squared_log"] > pipeline.R2_LOW_CONFIDENCE
     assert not row["low_confidence"]
+
+
+def test_forecast_cap_is_total_life(results):
+    life = results["max_life_months"]
+    assert (results["forecast_month_cap"] == life - results["months_history"]).all()
+    assert (results["months_history"] + results["forecast_months"] <= life).all()
+
+
+def test_sensitivity_run_does_not_write(tmp_path, monkeypatch):
+    monkeypatch.setattr(pipeline, "RESULTS", str(tmp_path / "r"))
+    monkeypatch.setattr(pipeline, "RESULTS_CSV", str(tmp_path / "r" / "x.csv"))
+    monkeypatch.setattr(pipeline, "TYPE_CURVE_CSV", str(tmp_path / "r" / "tc.csv"))
+    base = pipeline.run(write=False)
+    harsher = pipeline.run(dmin_annual=0.12, econ_limit_bpm=300.0, max_life_months=360,
+                           write=False)
+    assert not (tmp_path / "r").exists()
+    assert (harsher["eur_bbl"] <= base["eur_bbl"] + 1e-6).all()
+    assert harsher["dmin_annual"].eq(0.12).all() and harsher["max_life_months"].eq(360).all()
+
+
+def test_type_curve_ignores_unreported_months_and_thin_months(prod):
+    from src.type_curve import MIN_WELLS, observed_type_curve
+    tc = observed_type_curve(prod)
+    assert (tc["well_count"] >= MIN_WELLS).all()
+    assert tc.loc[tc["well_count"] == 30, "month_on_production"].max() == 30
+    m34 = prod[prod["month_on_production"] == 34]["oil_bbl"]
+    assert tc.set_index("month_on_production").loc[34, "p50_oil_bbl"] == m34.median()

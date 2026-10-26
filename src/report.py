@@ -28,7 +28,7 @@ def _month(yyyymm) -> str:
 
 def _assumptions(results: pd.DataFrame) -> tuple[float, float, int]:
     r = results.iloc[0]
-    return float(r["dmin_annual"]), float(r["econ_limit_bpm"]), int(r["max_forecast_months"])
+    return float(r["dmin_annual"]), float(r["econ_limit_bpm"]), int(r["max_life_months"])
 
 
 def _area(results: pd.DataFrame) -> str:
@@ -41,7 +41,7 @@ def caption(results: pd.DataFrame) -> str:
     dmin, econ, cap = _assumptions(results)
     return (f"{_area(results)} · {len(results)} horizontal oil wells · "
             f"Hyperbolic Arps with {dmin:.0%}/yr terminal decline · "
-            f"Economic limit {econ:,.0f} bbl/mo (forecast capped at {cap // 12} yr)")
+            f"Economic limit {econ:,.0f} bbl/mo · {cap // 12}-yr max well life")
 
 
 def data_note(results: pd.DataFrame, html: bool = False) -> str:
@@ -67,8 +67,8 @@ def methodology(results: pd.DataFrame) -> str:
     n_clusters = results["cluster_id"].nunique()
     return ("Methodology: Arps hyperbolic decline fit from peak rate (zero months excluded, "
             f"robust soft-L1 loss), {dmin:.0%}/yr terminal decline, EUR to "
-            f"{econ:,.0f} bbl/mo economic limit or {cap // 12} more years · "
-            f"k-means (k={n_clusters}) on (Di, b). Technical estimates, not SPE PRMS reserves.")
+            f"{econ:,.0f} bbl/mo economic limit within a {cap // 12}-yr well life · "
+            f"k-means (k={n_clusters}) on (log Di, b). Technical estimates, not SPE PRMS reserves.")
 
 
 def well_label(row) -> str:

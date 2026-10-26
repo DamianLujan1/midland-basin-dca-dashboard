@@ -11,18 +11,20 @@ decline behavior with k-means clustering.
 
 ## What it does
 
-- **Automated Arps fitting** — hyperbolic decline with 5%/yr terminal exponential
-  decline, fit per well with `scipy` (robust log-space least squares from the peak
-  month, qi capped at the observed peak rate)
+- **Automated Arps fitting** — hyperbolic decline with terminal exponential decline,
+  fit per well with `scipy` (robust log-space least squares from the peak month, qi
+  capped at the observed peak rate)
 - **EUR & remaining reserves** — forecast from the month after the last reported month
-  to a 150 bbl/month (~5 BOPD) economic limit, capped at 50 more years
+  to a 150 bbl/month (~5 BOPD) economic limit within a 50-year well life; terminal
+  decline, economic limit and well life are adjustable in the app
 - **QC flags** — low R² (linear or log space), parameters stuck on a fit bound,
   forecasts that start far from the current producing rate, wells shut in at the last
   report, and time-capped forecasts
-- **Decline-behavior clustering** — k-means on (Di, b) to group wells that decline
-  alike (the basis for type curves and benchmarking)
+- **Decline-behavior clustering** — k-means on (log Di, b), k chosen by silhouette, to
+  group wells that decline alike (the basis for type curves and benchmarking)
+- **Observed type curve** — P25/P50/P75 monthly oil by month on production
 - **Interactive dashboard** — per-well history vs. fit vs. forecast chart (linear/log),
-  cohort EUR ranking, cluster explorer, one-click CSV download
+  cohort EUR ranking, type curve, cluster explorer, one-click CSV download
 
 ## Data — read this first
 
@@ -56,18 +58,26 @@ decline behavior with k-means clustering.
   lag or calendar padding in the extract, not 30 simultaneous shut-ins, so the loader
   drops trailing months in which no well reports any volume. Zero months for a single
   well inside the reported period are kept as that well's shut-ins.
-- **Lease reported before first production.** For 18 of the 30 wells the lease's first
-  RRC-reported month (`lease_first_reported`) is 4–9 months before its first month with
-  positive production, and the source reports zero volume for those months. The data
-  cannot tell whether these were pre-production months (lease set up before
-  turn-in-line — the batched start dates by pad suggest this) or production reported
-  under another ID; if it is the latter, cumulative and EUR for those wells are
-  understated. The dashboard's "First production" is the first positive month.
-- **Upstream type curve and QC files.** `martin_observed_type_curve.csv` and
-  `martin_real_cohort_analysis_qc.json` come from the source dataset and are **not used
-  by this project**. They were built with the padded zero months included, so their P50
-  collapses at months-on-production 34–36 and 44–47 (e.g. `all_wells_present_through_mop`
-  should be 30, not 33). Rebuild them before relying on them.
+- **Lease reported before first production — no production missing.** For 18 of the 30
+  wells the lease's first RRC-reported month (`lease_first_reported`) is 4–9 months
+  before its first month with positive production. Those months were reported with
+  zero oil *and* zero casinghead gas (the source dataset dropped them as
+  "pre-positive" rows), and the timing shows they are leases set up before pad-level
+  turn-in-line, not lost production: every pad's wells start producing in the same
+  month regardless of lease date (all 12 DAVIS-LACY wells in July 2023 against five
+  different lease dates; all 8 EPLEY-MARTIN wells in September 2022, five of which
+  have no gap at all), and the "gap" wells ramp up from month 1 exactly like the
+  others (EPLEY-MARTIN 31E: 1,375 → 11,617 → 18,712 bbl), which a well already months
+  into production would not do. DAVIS-LACY 31A, whose first month is its peak, is the
+  one ambiguous case. The dashboard's "First production" is the first positive month.
+- **Upstream type curve and QC files.** `data/martin_observed_type_curve.csv` and
+  `data/martin_real_cohort_analysis_qc.json` are kept exactly as the source dataset
+  published them, but they were built with the padded zero months included, so their
+  P50 collapses at months-on-production 34–36 (P50 684 bbl at month 34 vs 3,607 in the
+  reported data) and their `all_wells_present_through_mop` should be 30, not 33. The
+  pipeline rebuilds the observed type curve with the same method from the cleaned data
+  (`results/observed_type_curve.csv`, months with at least 10 reporting wells; shown on
+  the Cohort tab); use that one.
 
 ## Methodology
 
@@ -78,13 +88,19 @@ decline behavior with k-means clustering.
    peak month (peak = 0, shut-in gaps kept), fit in log space via
    `scipy.optimize.curve_fit` with a robust soft-L1 loss (`f_scale` 0.3) so a single
    partial or restart month cannot dominate the fit; bounds `Di ∈ [0.005, 0.80]/mo`,
-   `b ∈ [0.05, 2.0]`, `qi ≤ observed peak`. Once instantaneous decline falls to 5%/yr
-   nominal, the forecast switches to terminal exponential decline.
+   `b ∈ [0.05, 2.0]`, `qi ≤ observed peak`. Once instantaneous decline falls to the
+   terminal rate Dmin, the forecast switches to exponential decline.
 3. **EUR** — cumulative produced + forecast from the month after the last reported
-   month to the 150 bbl/mo economic limit, capped at 600 forecast months (50 years).
-4. **Clustering** — k-means (k=3) on standardized (Di, b). Clusters are named by where
-   their centroid sits on each axis (e.g. "High Di · high b"); clusters whose
-   centroids are within 20% on an axis share that axis's level, and wells with a
+   month to the economic limit, within a maximum total well life counted from first
+   production. Base case: Dmin 8%/yr nominal, 150 bbl/mo (~5 BOPD), 50-year life — see
+   *Forecast assumptions* below.
+4. **Clustering** — k-means on standardized (log Di, b) — Di spans more than an order of
+   magnitude, so its log is the natural scale. The model is fitted on wells that are not
+   low-confidence and the rest are assigned to the nearest cluster, so a few poor fits
+   cannot move the boundaries; k is chosen from 2–4 by silhouette score, and the
+   pipeline reports a bootstrap stability score (adjusted Rand index) for the result.
+   Clusters are named by where they sit on each axis (e.g. "High Di · high b"); clusters
+   within 20% of each other on an axis share that axis's level, and wells with a
    parameter stuck on a fit bound are left out of the naming centroids. Di alone is
    misleading, because a high-Di well with a high b flattens quickly and can
    out-produce a low-Di, near-exponential well.
@@ -105,39 +121,52 @@ the headline numbers and the cluster table):
 - Mean b-factor **0.97** (median 0.94; 12 of 30 wells above 1), mean nominal initial
   decline **~385%/yr** (median 387%/yr) — classic steep shale decline from flush
   production.
-- Mean EUR **~564,000 bbl** per well (median ~526,000; range ~169k–1.04M bbl).
+- Mean EUR **~517,000 bbl** per well (median ~522,000; range ~169k–891k bbl).
 - Mean fit R² **0.88** (median 0.93); all 30 wells have R² > 0.6, but only 26 of 30 in
   log space, which also scores the late-life tail.
-- **8 of 30 wells are low-confidence, including the #1 and #4 EUR wells**
-  (EPLEY-MARTIN 31E, 1.04M bbl; DAVIS-LACY 31K, 0.95M bbl). Both rebound after a
+- **8 of 30 wells are low-confidence, including the #2 and #5 EUR wells**
+  (EPLEY-MARTIN 31E, 864k bbl; DAVIS-LACY 31K, 776k bbl). Both rebound after a
   mid-life curtailment (31E fell to 271 bbl in one month; 31K to 3,208 and 1,583 bbl),
   and a single hyperbolic through the rebound gives a very flat tail (b 1.84 and 2.0).
   Treat the top of the EUR ranking with caution.
-- 6 forecasts are still above the economic limit after 50 more years, so their EURs are
-  capped by time, not the economic limit.
-- Three clusters along the Di–b trend (k=3 is a chosen segmentation, not a discovered
-  number of families; Di and b are correlated, and the two upper clusters differ in b,
-  not Di):
+- No forecast reaches the 50-year life cap under the base case.
+- Two clusters along the Di–b trend. k=2 is chosen by silhouette (0.52 vs 0.44 for
+  k=3) and is stable under bootstrap resampling (adjusted Rand index 0.84; the earlier
+  k=3 split scored ~0.6, i.e. it changed with the sample):
 
   | Cluster | Wells | Mean b | Mean Di (nom.) | Mean EUR (bbl) | Mean EUR / 1,000 ft |
   |---|---|---|---|---|---|
-  | High Di · high b | 5 | 1.78 | 588%/yr | 804,000 | 80,000 |
-  | High Di · mid b | 14 | 1.05 | 482%/yr | 593,000 | 59,000 |
-  | Low Di · low b | 11 | 0.50 | 168%/yr | 418,000 | 42,000 |
+  | High Di · high b | 20 | 1.22 | 498%/yr | 571,000 | 57,000 |
+  | Low Di · low b | 10 | 0.47 | 158%/yr | 408,000 | 41,000 |
 
-  The high-b cluster has the highest EUR per 1,000 ft of lateral, but 4 of its 5 wells
-  are low-confidence and its EURs lean hardest on the long forecast tail. (Its mean Di
-  includes GLYNN-ATCHISON 44M, whose Di is stuck on the 960%/yr fit bound.)
+  The high-Di/high-b cluster has the higher EUR per 1,000 ft of lateral; 5 of its 20
+  wells are low-confidence.
+
+### Forecast assumptions
+
+The base case uses an 8%/yr nominal terminal decline (the middle of the 6–10% range in
+common use for Permian horizontals), a 150 bbl/mo (~5 BOPD) economic limit and a
+50-year total well life counted from first production. The fits do not depend on
+these; only the forecast tail does. In the Streamlit app all three are sliders in the
+sidebar (the static Vercel page shows the base case). `python scripts/sensitivity.py`
+reproduces this table:
+
+| Case | Dmin (nom./yr) | Econ. limit (bbl/mo) | Max life (yr) | Mean EUR (bbl) | Median EUR (bbl) | vs base |
+|---|---|---|---|---|---|---|
+| Base case | 8.0% | 150 | 50 | 516,633 | 522,138 | +0.0% |
+| Optimistic tail (Dmin 5%) | 5.0% | 150 | 50 | 562,213 | 525,907 | +8.8% |
+| Conservative tail (Dmin 10%) | 10.0% | 150 | 50 | 493,481 | 503,112 | -4.5% |
+| Higher economic limit (250 bbl/mo) | 8.0% | 250 | 50 | 503,913 | 507,174 | -2.5% |
+| 30-year well life | 8.0% | 150 | 30 | 507,428 | 517,380 | -1.8% |
+| Source dataset's QC assumptions | 9.6% | 250 | 30 | 486,453 | 492,227 | -5.8% |
 
 ### Limitations
 
 - 30-well convenience cohort (one operator, one county) — not a statistical sample
   of the Midland Basin.
-- Economic limit, terminal decline and the 50-year cap are assumptions; EURs are
-  technical estimates, not SPE PRMS reserves. They are on the optimistic side: the
-  source dataset's own QC used 9.6%/yr terminal decline, a 250 bbl/mo limit and a
-  30-year total life, which on the same fits lowers mean EUR by ~14% (median well
-  ~10%).
+- Economic limit, terminal decline and well life are assumptions; EURs are technical
+  estimates, not SPE PRMS reserves. See *Forecast assumptions* for how much they move
+  EUR.
 - One hyperbolic segment per well: wells whose rate dips and then rebounds are not
   re-fitted from the restart, which inflates b. That explains the high-b
   low-confidence wells (e.g. EPLEY-MARTIN 31E, DAVIS-LACY 31K); the other flags are b
@@ -210,7 +239,7 @@ midland-basin-dca-dashboard/
 ├── src/
 │   ├── data_loader.py     # load + clean production series
 │   ├── arps.py            # Arps models, curve fitting, EUR
-│   ├── clustering.py      # k-means on (Di, b)
+│   ├── clustering.py      # k-means on (log Di, b), k by silhouette
 │   ├── figures.py         # Plotly charts shared by both front ends
 │   ├── report.py          # captions / labels shared by both front ends
 │   └── pipeline.py        # end-to-end: python -m src.pipeline

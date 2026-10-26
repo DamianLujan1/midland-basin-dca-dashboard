@@ -3,7 +3,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.clustering import cluster_order, cluster_summary, cluster_wells
+from src.clustering import (choose_k, cluster_order, cluster_stability, cluster_summary,
+                            cluster_wells)
 
 
 def _results(groups=((6.0, 1.7), (4.0, 1.0), (1.5, 0.4))):
@@ -29,14 +30,14 @@ def test_names_describe_both_axes_and_ids_order_by_di():
 
 def test_axis_that_does_not_separate_clusters_shares_a_level():
     # High and mid groups differ on b but not on Di: both are 'High Di'.
-    out = cluster_wells(_results(((5.0, 1.8), (4.8, 1.0), (1.5, 0.4))))
+    out = cluster_wells(_results(((5.0, 1.8), (4.8, 1.0), (1.5, 0.4))), n_clusters=3)
     assert cluster_order(out) == ["High Di · high b", "High Di · mid b", "Low Di · low b"]
 
 
 def test_bound_stuck_well_does_not_set_the_name():
     res = _results(((5.0, 1.8), (4.8, 1.0), (1.5, 0.4)))
     res.loc[0, ["Di_annual", "bounds_hit"]] = [9.6, "Di"]  # one Di stuck on the bound
-    names = set(cluster_wells(res)["cluster"])
+    names = set(cluster_wells(res, n_clusters=3)["cluster"])
     assert {"High Di · high b", "High Di · mid b"} <= names
 
 
@@ -64,6 +65,30 @@ def test_insufficient_data_returns_copy():
 
 
 def test_summary_counts_only_fitted_wells():
-    summ = cluster_summary(cluster_wells(_results()))
+    summ = cluster_summary(cluster_wells(_results(), n_clusters=3))
     assert summ["wells"].sum() == 15
     assert list(summ["cluster"]) == ["High Di · high b", "Mid Di · mid b", "Low Di · low b"]
+
+
+def test_k_chosen_by_silhouette():
+    out = cluster_wells(_results(((6.0, 1.7), (1.5, 0.4))))
+    assert out.loc[out["status"] == "ok", "cluster"].nunique() == 2
+    k, scores = choose_k(_results(((6.0, 1.7), (1.5, 0.4))))
+    assert k == 2 and scores[2] == max(scores.values())
+
+
+def test_low_confidence_wells_do_not_move_boundaries():
+    res = _results()
+    res["low_confidence"] = False
+    extreme = res.index[:2]
+    clean = cluster_wells(res.drop(extreme), n_clusters=3)
+    res.loc[extreme, ["Di_annual", "b", "low_confidence"]] = [[9.6, 2.0, True], [0.2, 0.05, True]]
+    out = cluster_wells(res, n_clusters=3)
+    kept = out[~out["api8"].isin(res.loc[extreme, "api8"])].set_index("api8")["cluster"]
+    pd.testing.assert_series_equal(kept, clean.set_index("api8")["cluster"])
+    assert out["cluster"].notna().all() and (out["cluster"] != "Not fitted").sum() == len(res) - 1
+
+
+def test_stability_is_one_for_well_separated_groups():
+    out = cluster_wells(_results(((6.0, 1.7), (1.5, 0.4))))
+    assert cluster_stability(out, n_boot=20) > 0.95

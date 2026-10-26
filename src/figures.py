@@ -21,7 +21,7 @@ def well_figure(prod, row):
     api8 = int(row["api8"])
     dmin_m = float(row["dmin_annual"]) / 12.0
     econ_bpm = float(row["econ_limit_bpm"])
-    max_months = int(row["max_forecast_months"])
+    max_months = int(row["forecast_month_cap"])
     full = prod[prod["api8"] == api8].copy()
     fit_df = fitting_series(prod, api8)
     peak_mop = int(fit_df["month_on_production"].iloc[0])
@@ -38,8 +38,8 @@ def well_figure(prod, row):
     last_date = full["date"].max()
     fc_dates = pd.date_range(last_date + pd.offsets.MonthBegin(1),
                              periods=len(fc), freq="MS")
-    fc_name = (f"Forecast (capped at {max_months // 12} yr)" if len(fc) == max_months
-               else f"Forecast to {econ_bpm:,.0f} bbl/mo limit")
+    fc_name = (f"Forecast (capped at {int(row['max_life_months']) // 12}-yr life)"
+               if len(fc) == max_months else f"Forecast to {econ_bpm:,.0f} bbl/mo limit")
 
     fig = go.Figure()
     fig.add_trace(go.Bar(x=full["date"], y=full["oil_bbl"], name="Actual oil (bbl/mo)",
@@ -61,6 +61,26 @@ def well_figure(prod, row):
                      dict(label="Log", method="relayout", args=[{"yaxis.type": "log"}])],
         )],
     )
+    return fig
+
+
+def type_curve_figure(tc: pd.DataFrame):
+    """Observed P25-P75 band and P50 oil rate by month on production."""
+    x = tc["month_on_production"]
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=x, y=tc["p75_oil_bbl"], line=dict(width=0),
+                             name="P75", hoverinfo="skip", showlegend=False))
+    fig.add_trace(go.Scatter(x=x, y=tc["p25_oil_bbl"], line=dict(width=0), fill="tonexty",
+                             fillcolor="rgba(230,85,13,0.18)", name="P25–P75",
+                             hoverinfo="skip"))
+    fig.add_trace(go.Scatter(x=x, y=tc["p50_oil_bbl"], name="P50 oil (bbl/mo)",
+                             line=dict(color="#e6550d", width=3),
+                             customdata=tc[["p25_oil_bbl", "p75_oil_bbl", "well_count"]],
+                             hovertemplate="Month %{x}: P50 %{y:,.0f} bbl<br>P25–P75 "
+                                           "%{customdata[0]:,.0f}–%{customdata[1]:,.0f}"
+                                           "<br>%{customdata[2]} wells<extra></extra>"))
+    fig.update_layout(xaxis_title="Month on production", yaxis_title="Oil (bbl/month)",
+                      height=380, legend=dict(orientation="h", y=1.1), hovermode="x")
     return fig
 
 
