@@ -27,8 +27,8 @@ from scipy.optimize import curve_fit
 # b is capped at 1.2 by default. A cap is a judgement call -- without one a
 # dip-and-rebound history can drive b to ~2 and a decades-long flat tail. 1.2
 # was picked from 1.0 / 1.2 / 1.5 / 2.0 by hindcasting these wells
-# (scripts/backtest.py): it beat 1.5 at 12 and 18 months, while 1.0
-# under-forecast 24 months by ~14%.
+# (scripts/backtest.py): it beat 1.5 at 12 and 24 months (level at 6 and 18),
+# while 1.0 under-forecast 24 months by ~12% (median).
 DI_BOUNDS = (0.005, 0.80)
 B_MIN = 0.05
 B_CAP = 1.2
@@ -69,8 +69,14 @@ PARTIAL_MONTH_RATIO = 0.10
 CURTAIL_RAMP = (0.3, 0.7)
 CURTAIL_RATIO = 0.5
 # The first pass's reference: the median of the REF_HALF_WINDOW months either
-# side (zeros included), floored at REF_FLOOR of the peak month.
+# side (zeros included), but at least every other month's volume decayed by
+# REF_DECAY per month away from it, and at least REF_FLOOR of the peak month.
+# The decayed envelope matters only inside shut-ins, where the median is zero:
+# it keeps a small test volume there reading as a small share of a month
+# instead of a large share of the floor (which flipped the fit between two
+# solutions).
 REF_HALF_WINDOW = 3
+REF_DECAY = 0.8
 REF_FLOOR = 0.01
 
 
@@ -208,7 +214,8 @@ def month_weights(q: np.ndarray, q_ref: np.ndarray) -> tuple[np.ndarray, np.ndar
 
 def local_reference(q: np.ndarray) -> np.ndarray:
     """Each month's first-pass reference rate: the median of its neighbouring
-    months (REF_HALF_WINDOW either side, zeros included), floored at REF_FLOOR
+    months (REF_HALF_WINDOW either side, zeros included), but no less than any
+    other month's volume times REF_DECAY per month between them, nor REF_FLOOR
     of the peak. It depends on no fit and moves continuously with every
     month's volume."""
     q = np.asarray(q, dtype=float)
@@ -217,7 +224,11 @@ def local_reference(q: np.ndarray) -> np.ndarray:
     w = REF_HALF_WINDOW
     win = sliding_window_view(np.pad(q, w, constant_values=np.nan), 2 * w + 1)
     ref = np.nanmedian(np.delete(win, w, axis=1), axis=1)
-    return np.maximum(ref, REF_FLOOR * q.max())
+    k = np.arange(len(q))
+    decay = REF_DECAY ** np.abs(k[:, None] - k[None, :]).astype(float)
+    np.fill_diagonal(decay, 0.0)
+    envelope = (q[None, :] * decay).max(axis=1)
+    return np.maximum(np.maximum(ref, envelope), REF_FLOOR * q.max())
 
 
 def _clock(frac: np.ndarray) -> np.ndarray:

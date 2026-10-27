@@ -45,3 +45,14 @@ jobs:
         run: python scripts/build_static.py
       - name: Compare
         run: python scripts/check_outputs.py "$RUNNER_TEMP/committed" .
+      - name: Keep this runner's rebuild if they differ
+        # A value within CPU noise of a rounding boundary or the economic limit
+        # can come out differently here than on the machine that built the
+        # commit; committing these files settles it.
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rebuilt-outputs
+          path: |
+            results/
+            public/

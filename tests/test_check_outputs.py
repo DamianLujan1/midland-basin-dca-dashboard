@@ -25,6 +25,7 @@ def test_displayed_numbers_may_differ_by_one_rounding_step():
 def test_a_change_of_format_is_caught():
     assert not co.same_text("R² 0.965", "R² 0.97")            # three decimals to two
     assert not co.same_text("537,000 bbl", "537,400 bbl")     # thousands to units
+    assert co.same_text("999 Mbbl", "1,000 Mbbl")             # a flip, not a format change
 
 
 def _typed(values):

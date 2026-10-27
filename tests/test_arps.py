@@ -5,6 +5,8 @@ import pytest
 from src.arps import (
     B_CAP,
     CURTAIL_RAMP,
+    REF_DECAY,
+    REF_FLOOR,
     _switch_time,
     eur_bbl,
     fit_decline,
@@ -256,7 +258,18 @@ def test_local_reference_is_the_median_of_the_neighbouring_months():
     ref = local_reference(q)
     assert ref[0] == pytest.approx(np.median([900.0, 800.0, 0.0]))
     assert ref[4] == pytest.approx(np.median([900.0, 800.0, 0.0, 650.0, 600.0, 2.0]))
-    assert local_reference(np.array([1000.0, 0.0, 0.0, 0.0, 0.0]))[2] == pytest.approx(10.0)
+
+
+def test_local_reference_inside_a_shut_in_follows_the_producing_months():
+    # The median is zero inside a shut-in; the reference falls back to the
+    # producing months either side decayed by REF_DECAY per month, not to the
+    # 1%-of-peak floor, so a test volume there reads as a small share of a month.
+    q = np.r_[10000.0, 8000.0, np.zeros(6), 5000.0, 4500.0]
+    ref = local_reference(q)
+    assert ref[4] == pytest.approx(max(8000.0 * REF_DECAY ** 3, 5000.0 * REF_DECAY ** 4))
+    assert (ref[2:8] > 10 * REF_FLOOR * q.max()).all()
+    tail = local_reference(np.array([1000.0, 0.0, 0.0, 0.0, 0.0]))
+    assert tail[4] == pytest.approx(max(1000.0 * REF_DECAY ** 4, REF_FLOOR * 1000.0))
 
 
 def test_a_month_of_a_few_barrels_counts_like_a_zero_month():

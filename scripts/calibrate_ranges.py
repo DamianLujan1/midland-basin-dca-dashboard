@@ -127,6 +127,19 @@ def main() -> None:
         print(f"| {label} | {int(m.sum())} | {r[:, 1].mean():.0%} | {r[:, 2].mean():.2f} "
               f"| {r[:, 4].mean():.0%} | {r[:, 5].mean():.0%} "
               f"| {r[:, 3].mean():.3f} / {r[:, 6].mean():.3f} |")
+    # Interval score, ensemble minus constant width, paired by window, with a 90%
+    # CI from resampling wells (a well's windows overlap, so they move together).
+    diff = rows[:, 3] - rows[:, 6]
+    wells = np.unique(api)
+    rng = np.random.default_rng(0)
+    boot = [np.concatenate([diff[api == w] for w in rng.choice(wells, len(wells))]).mean()
+            for _ in range(5000)]
+    lo, hi = np.percentile(boot, [5, 95])
+    const_ratio = np.exp(2 * loo_k).mean()
+    print(f"\nInterval score, ensemble minus constant width: {diff.mean():+.3f} (90% CI "
+          f"{lo:+.3f} to {hi:+.3f}, resampling wells); the ensemble scores better in "
+          f"{int((diff < 0).sum())} of {len(diff)} windows. Mean P10/P90 ratio: ensemble "
+          f"{rows[:, 2].mean():.2f}, constant width {const_ratio:.2f}.")
     # Which is the better middle of the range: P50 (the fit) or the ensemble median?
     below_fit, below_median = int(rows[:, 7].sum()), int(rows[:, 8].sum())
     print(f"\nHeld-out volume below P50 (the fit) in {below_fit}/{len(rows)} windows "

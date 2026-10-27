@@ -12,8 +12,10 @@ differently), which is not staleness, so:
   on flat stretches of the fit's cost. A rebuild with the vector math and BLAS
   of a typical CI runner (AVX2, no AVX-512) differed from one on an AVX-512
   machine by at most 3e-7 in the deterministic values, 2e-5 in the P90/P10
-  values and band and 8e-5 in the ensemble members; a real change -- e.g.
-  LEVEL_SIGMA 0.23 -> 0.231 -- moves P90/P10 by ~4e-3;
+  values and band and 8e-5 in the ensemble members; a real change moves them
+  further -- LEVEL_SIGMA 0.225 -> 0.226 moves P90/P10 by about 1e-3 (up to
+  2.5e-3; past RTOL_ENSEMBLE in 29 of 30 wells) and ensemble members by up to
+  3e-3;
 - a forecast month whose rate lands within that noise of the economic limit
   can be in the forecast on one machine and not on another, so forecast
   lengths may differ by one month: volumes by up to the well's limit (one
@@ -83,12 +85,9 @@ def _step(token: str) -> float:
 
 
 def _shape(token) -> str:
-    """A displayed number's format: '#' plus its decimals, or ',000' when it is
-    rounded to thousands."""
+    """A displayed number's format: '#' plus its decimals."""
     token = token.group(0) if hasattr(token, "group") else token
-    if "." in token:
-        return "#." + "#" * len(token.split(".")[1])
-    return "#,000" if token.endswith(",000") else "#"
+    return "#." + "#" * len(token.split(".")[1]) if "." in token else "#"
 
 
 def same_text(a: str, b: str) -> bool:
@@ -100,7 +99,9 @@ def same_text(a: str, b: str) -> bool:
         return False
     for x, y in zip(NUMBER.findall(a), NUMBER.findall(b)):
         u, v = float(x.replace(",", "")), float(y.replace(",", ""))
-        if x != y and abs(u - v) > 1.0001 * _step(x):
+        # Thousands-rounded volumes step by 1,000 (both must be); '999' vs '1,000' by 1.
+        step = min(_step(x), _step(y))
+        if x != y and abs(u - v) > 1.0001 * step:
             return False
     return True
 

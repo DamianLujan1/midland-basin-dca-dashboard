@@ -278,3 +278,22 @@ def test_clusters_are_named_by_shape_and_agree_with_retention(results):
     assert len(steep) and len(shallow)
     assert steep["retention_12mo"].mean() < shallow["retention_12mo"].mean()
     assert steep["retention_36mo"].mean() < shallow["retention_36mo"].mean()
+
+
+def test_a_test_volume_inside_a_shut_in_does_not_flip_the_fit(prod):
+    # DAVIS-LACY 31B with months 2-5 shut in: the first pass's reference used to
+    # fall to 1% of the peak there, so month 2 at 94 bbl instead of 92 read as
+    # a large share of a month and moved EUR from 467,000 to 251,000 bbl.
+    from src.arps import eur_bbl, fit_decline
+    from src.data_loader import fitting_series
+    q0 = fitting_series(prod, 31744071)["oil_bbl"].to_numpy(float)
+    eurs = []
+    for v in np.arange(0.0, 301.0, 4.0):
+        q = q0.copy()
+        q[2:6] = 0.0
+        q[2] = v
+        fit, _, _ = fit_decline(q, qi_max=q.max())
+        eurs.append(q.sum() + eur_bbl(fit["qi"], fit["Di_monthly"], fit["b"], 0.0, 0.08 / 12,
+                                      130.0, start_t=fit["producing_months"])["remaining_bbl"])
+    eurs = np.array(eurs)
+    assert (np.abs(np.diff(eurs)) / eurs[:-1]).max() < 0.005

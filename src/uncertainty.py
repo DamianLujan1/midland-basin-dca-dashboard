@@ -19,9 +19,10 @@ scenario is a physically possible decline. A member combines:
 LEVEL_SIGMA is calibrated by scripts/calibrate_ranges.py: in a hindcast that
 hides each well's last 6, 12 or 18 reported months and leaves the well out of
 the calibration, the ensemble's 10-90% range covers 80% of the held-out
-volumes. Over those 6-18 months the ensemble is no sharper than a band of
-constant relative width; what it adds is a spread that grows with the
-forecast horizon as the uncertainty in b and Di compounds. Ranges for
+volumes. Over those 6-18 months the ensemble is about as wide as a band of
+constant relative width and scores about the same; what it adds is a spread
+that grows with the forecast horizon as the uncertainty in b and Di
+compounds. Ranges for
 remaining reserves over decades are that extrapolation and cannot be checked
 against this data: the level factor applies to the whole remaining life.
 
@@ -97,8 +98,9 @@ def members(q: np.ndarray, clock: np.ndarray, weight: np.ndarray, fit: dict,
     read as a real dip and pull every member low. Each resampled series is the
     fitted curve plus pool residuals at every month the fit uses, refitted with
     the same clock and weights. (Keeping the down-weighted months' own
-    residuals instead scored worse in the hindcast: its ensemble median sat
-    above 58% of held-out volumes, against 52% for this.)
+    residuals instead scored worse in the hindcast: held-out volumes fell
+    below that ensemble's median in 42% of windows, against 48% for this;
+    50% is ideal.)
     """
     rng = np.random.default_rng(seed)
     q = np.asarray(q, dtype=float)

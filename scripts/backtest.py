@@ -13,9 +13,11 @@ choice:
     clock 1.0      producing-time clock, b <= 1.0
     current        producing-time clock, b <= 1.2
 
-The variants and their settings were chosen on these same 30 wells, so the
-confidence intervals are optimistic, and the windows overlap (only 14 wells
-have enough history for the 24-month holdout).
+Every method is scored on the same wells for each holdout: those every method
+can fit (a fit needs 12 usable months, so a short or curtailed window drops
+out). The variants and their settings were chosen on these same 30 wells, so
+the confidence intervals are optimistic, and the windows overlap (only 14
+wells have enough history for the 24-month holdout).
 
 Run:  python scripts/backtest.py   (from the repo root)
 """
@@ -95,7 +97,11 @@ def paired(a, b, rng):
 def main() -> None:
     prod = load_production(
         os.path.join(DATA, "martin_selected_30_monthly_production_normalized.csv"))
-    errs = {h: {name: errors(prod, m, h) for name, m in METHODS.items()} for h in HOLDOUTS}
+    errs = {}
+    for h in HOLDOUTS:
+        by_method = {name: errors(prod, m, h) for name, m in METHODS.items()}
+        common = set.intersection(*(set(e) for e in by_method.values()))
+        errs[h] = {name: {w: e[w] for w in common} for name, e in by_method.items()}
     rng = np.random.default_rng(0)
 
     print("Mean absolute held-out volume error (median bias):\n")
