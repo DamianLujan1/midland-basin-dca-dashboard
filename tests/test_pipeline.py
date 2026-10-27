@@ -251,7 +251,7 @@ def test_restart_wells_no_longer_get_flat_tails(results, prod):
     cal = fit_hyperbolic(s["t"].to_numpy(float), s["oil_bbl"].to_numpy(),
                          qi_max=s["oil_bbl"].max())
     assert cal["b_at_cap"] and e["b"] < cal["b"] - 0.15
-    assert e["curtailed_months"] >= 5 and "under half weight in the fit" in e["qc_flags"]
+    assert e["curtailed_months"] >= 5 and "taken off the producing clock" in e["qc_flags"]
     # DAVIS-LACY 31K (b 2.0 on the old bound, 776k): still wants b above the cap.
     k = r.loc[31744055]
     assert k["b_at_cap"] and k["eur_bbl"] < 700_000 and "b held at the 1.2 cap" in k["qc_flags"]

@@ -67,6 +67,14 @@ def pv_label(rate) -> str:
     return f"PV{round(float(rate) * 100, 4):g}"
 
 
+def download_frame(results: pd.DataFrame) -> pd.DataFrame:
+    """Results for download, with the PV columns named for the rate they were
+    discounted at (pv20_usd at 20%/yr); the committed CSV always says pv10."""
+    rate = results["econ_discount"].iloc[0] if len(results) else 0.10
+    label = pv_label(rate).lower().replace(".", "_")
+    return results.rename(columns=lambda c: c.replace("pv10", label) if c.startswith("pv10") else c)
+
+
 def _month(yyyymm) -> str:
     if pd.isna(yyyymm) or str(yyyymm) == "":
         return "—"
@@ -199,7 +207,7 @@ def well_detail(row) -> dict:
         "Last reported month": _month(row["last_reported"]),
         "History (mo)": str(int(row["months_history"])),
         "Downtime since peak (mo)": fmt(row["downtime_months"], ".1f"),
-        "Months down-weighted in the fit (under 70% of trend)": (
+        "Months shut in or down-weighted (under 70% of trend)": (
             f"{row['downweighted_months']:.0f} ({row['curtailed_months']:.0f} under 50%)"
             if pd.notna(row.get("downweighted_months")) else "—"),
         "Cum oil (bbl)": fmt(row["cum_oil_bbl"], ",.0f"),

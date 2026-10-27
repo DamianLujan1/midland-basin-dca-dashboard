@@ -71,13 +71,15 @@ def well_figure(prod, row, params=None):
                       annotation_text=f"economic limit {econ_bpm:,.0f} bbl/mo",
                       annotation_position="bottom right")
     fig.add_vline(x=last_date, line_dash="dot", line_color="gray",
-                  annotation_text="last reported month")
+                  annotation_text="last report", annotation_position="top right")
+    # No title (both pages name the well above the chart) and the legend below
+    # the plot, so a phone-width chart keeps its plot area.
     fig.update_layout(
-        title=f"{row['lease_name']} ({row['well_no']}) — API {api8}",
         xaxis_title="Date", yaxis_title="Oil (bbl/month)",
-        hovermode="x unified", height=460, legend=dict(orientation="h", y=1.08),
+        hovermode="x unified", height=500, margin=dict(l=60, r=20, t=50),
+        legend=dict(orientation="h", x=0, y=-0.15, yanchor="top"),
         updatemenus=[dict(
-            type="buttons", direction="left", x=1.0, xanchor="right", y=1.18,
+            type="buttons", direction="left", x=0, xanchor="left", y=1.02, yanchor="bottom",
             buttons=[dict(label="Linear", method="relayout", args=[{"yaxis.type": "linear"}]),
                      dict(label="Log", method="relayout", args=[{"yaxis.type": "log"}])],
         )],
@@ -127,6 +129,8 @@ def cluster_figure(ok: pd.DataFrame):
         height=480,
     )
     fig.update_traces(marker=dict(size=11, line=dict(width=2)))
-    fig.update_xaxes(tickformat=".0%")
-    fig.update_yaxes(tickformat=".0%")
+    fig.update_xaxes(tickformat=".0%", title_text="Rate kept after 1 yr (% of peak)")
+    fig.update_yaxes(tickformat=".0%", title_text="Rate kept after 3 yr (% of peak)")
+    fig.update_layout(legend=dict(orientation="h", x=0, y=-0.18, yanchor="top", title_text=""),
+                      height=520, margin=dict(l=60, r=20))
     return fig

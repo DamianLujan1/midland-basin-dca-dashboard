@@ -18,8 +18,9 @@ from src.pipeline import (DMIN_ANNUAL, ECONOMICS, ENSEMBLE_CSV, MAX_LIFE_MONTHS,
                           RESULTS_CSV, load_ensemble, load_results)
 from src.pipeline import run as run_pipeline
 from src.report import (CLUSTER_NOTE, RANGE_NOTE, caption, cohort_metrics, data_note,
-                        econ_limit_text, economics_note, methodology, ranking_kinds,
-                        ranking_table, well_detail, well_label, well_metrics, well_ranges)
+                        download_frame, econ_limit_text, economics_note, methodology,
+                        ranking_kinds, ranking_table, well_detail, well_label, well_metrics,
+                        well_ranges)
 from src.type_curve import observed_type_curve
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -174,7 +175,7 @@ with tab_cohort:
                   "rounded to the nearest thousand barrels. " + economics_note(results)))
     st.download_button(
         "⬇ Download full results CSV (current assumptions)",
-        results.to_csv(index=False).encode(),
+        download_frame(results).to_csv(index=False).encode(),
         "midland_basin_dca_results.csv", "text/csv")
 
     st.subheader("Observed type curve")

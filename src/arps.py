@@ -241,10 +241,11 @@ def fit_decline(q: np.ndarray, qi_max: float | None = None,
 
     Returns the fit (fit_hyperbolic's dict plus producing_months -- producing
     time at the first forecast month, i.e. its start_t --, downtime_months,
-    curtailed_months and curtailed_months_at_end, counted against the first
-    pass's trend at CURTAIL_RATIO, and downweighted_months, the producing
-    months the second fit gives a weight under 1), the producing time at the
-    start of each history month, and each month's fit weight.
+    curtailed_months and curtailed_months_at_end, the months shut in or under
+    CURTAIL_RATIO of the first pass's trend, and downweighted_months, the
+    months the second fit gives a weight under 1, shut-ins included), the
+    producing time at the start of each history month, and each month's fit
+    weight.
     """
     q = np.asarray(q, dtype=float)
     producing = q > 0
@@ -268,8 +269,10 @@ def fit_decline(q: np.ndarray, qi_max: float | None = None,
     curtailed = ratio < CURTAIL_RATIO   # zero months included
     fit["producing_months"] = float(frac.sum())
     fit["downtime_months"] = float(len(q) - frac.sum())
-    fit["curtailed_months"] = int((producing & curtailed).sum())
-    fit["downweighted_months"] = int((producing & (weight < 1)).sum())
+    # Shut-in months count with the rest, so a month of a few barrels counts
+    # the same as a zero month (both are almost all downtime at weight 0).
+    fit["curtailed_months"] = int(curtailed.sum())
+    fit["downweighted_months"] = int((weight < 1).sum())
     fit["curtailed_months_at_end"] = (int(np.argmin(curtailed[::-1])) if not curtailed.all()
                                       else len(q))
     return fit, clock, weight

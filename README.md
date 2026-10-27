@@ -114,13 +114,15 @@ and groups wells by decline shape with k-means clustering.
    over 70%, it is a full month at full weight (the shortfall is noise); in between,
    its share of a month rises linearly from 0.3 to 1 and its weight from 0 to 1. The
    first pass's reference is the median of the three months either side (zero months
-   included), which needs no fit; the second pass's is the first fit's trend. Nothing
-   switches at a threshold — a month of a few barrels counts almost exactly like a zero
-   month (1 or 10 bbl in place of 0 moves EUR by at most 0.02%) — so a small change in
-   one month makes a small change in the fit: no single ±10% month change moves any
-   well's EUR by more than 5.9% (DAVIS-LACY 31B, where one of the last months carries
-   the tail). On calendar time, a well that is shut in and then rebounds reads as a
-   flatter decline.
+   included), which needs no fit; the second pass's is the first fit's trend. Away from
+   long shut-ins (see *Limitations*) nothing switches at a threshold — a month of a few
+   barrels counts almost exactly like a zero month (1 or 10 bbl in place of 0 moves EUR
+   by at most 0.02%) — so a small change in one month makes a small change in the fit:
+   a ±10% change in any single month moves EUR by at most 7.4% (DAVIS-LACY 31B's peak
+   month), unless it changes which month is the peak, where the fit starts. 24 of the
+   2,250 such changes do, and they move EUR by up to 26% (DAVIS-LACY 31F, whose fourth
+   to sixth months are within 10% of each other). On calendar time, a well that is
+   shut in and then rebounds reads as a flatter decline.
 3. **Arps fit** — `q(t) = qi / (1 + b·Di·t)^(1/b)` with `t` = producing months since
    the peak month, fit in log space via `scipy.optimize.curve_fit` with a robust
    soft-L1 loss (`f_scale` 0.3) and the weights above, solved to a tolerance of 1e-12
@@ -178,9 +180,10 @@ and groups wells by decline shape with k-means clustering.
    forecast month is more than 1.35× above or below the median of its last 6 producing
    months, or its last 2+ reported months are shut in or under 50% of the first-pass
    trend (the forecast assumes a return to trend: "confirm status"). Low-confidence
-   wells get hollow markers on the cluster chart. b held at the cap, 3+ months under 50%
-   of trend, forecasts that hit the life cap and wells already below their economic
-   limit are also listed in the `qc_flags` column and the per-well QC warning.
+   wells get hollow markers on the cluster chart. b held at the cap, 3+ months of
+   inferred downtime (shut-in and curtailed months taken off the producing clock),
+   forecasts that hit the life cap and wells already below their economic limit are
+   also listed in the `qc_flags` column and the per-well QC warning.
 
 ### How the fitting method was chosen
 
@@ -291,14 +294,15 @@ the headline numbers and the cluster table):
   revenue at $2/mcf and a GOR of up to 10 mcf/bbl already covers their operating cost
   at today's rate. At $0 gas the economic limit rises to a median 145 bbl/mo and PV10
   falls 11.5%.
-- 26 of 30 wells have at least one month after peak under 50% of their first-pass
-  trend (median downtime 1.5 months; the most is WELCH-COX E39V, 6.6 months). In all,
-  126 producing months get a fit weight under 1 (under 70% of trend), 55 of them under
-  0.5 (under 50%). Nine wells have 3+ months under 50%, among them EPLEY-MARTIN 31E: its
-  2023 dip (down to 271 bbl) is read as downtime and the rebound to ~12,000 bbl/mo as
-  the well resuming its trend, which gives b 0.95 and 663,000 bbl instead of the capped
-  b 1.2 and 748,000 bbl a single calendar-time curve gives under the same assumptions. If that rebound was a
-  re-completion, a restart-segment forecast would be better.
+- 26 of 30 wells have at least one month after peak shut in or under 50% of their
+  first-pass trend (median downtime 1.5 months; the most is WELCH-COX E39V, 6.6
+  months). In all, 131 months get a fit weight under 1 (shut in or under 70% of trend),
+  60 of them shut in or under 50%. Seven wells have 3+ months of downtime, among them
+  EPLEY-MARTIN 31E (4.8): its 2023 dip (down to 271 bbl) is read as downtime and the
+  rebound to ~12,000 bbl/mo as the well resuming its trend, which gives b 0.95 and
+  663,000 bbl instead of the capped b 1.2 and 748,000 bbl a single calendar-time curve
+  gives under the same assumptions. If that rebound was a re-completion, a
+  restart-segment forecast would be better.
 - Mean fit R² **0.92** (median 0.95) over the months each well was fitted on; all 30
   wells have R² > 0.6 in both linear and log space.
 - **4 of 30 wells are low-confidence:** WELCH-COX E39V (#5 by EUR) and DAVIS-LACY 31D
@@ -374,6 +378,17 @@ far below today's rates) and sensitive in value; Dmin and the b cap move the tai
   misses the same way, the sum of the wells' P90s is below the cohort's own P90, so only
   P50 totals are shown. Pad-mates share operations (curtailments, frac hits), so the wells
   are not independent either.
+- Inside a shut-in of three or more months the first pass's reference (the median of
+  the neighbouring months) is zero and falls back to 1% of the peak, so a small
+  reported volume there — a test or a partial restart month of ~100 bbl — can be read as
+  a large share of a producing month and flip the fit: DAVIS-LACY 31B with its months
+  2–5 zeroed moves from 467,000 to 251,000 bbl EUR when month 2 goes from 92 to 94 bbl.
+  The data's five real shut-in months (four in WELCH-COX E39V, one in DAVIS-LACY 31B)
+  are not such cases: sweeping each from 0 to 2,000 bbl moves EUR by at most 1.8% per
+  25-bbl step.
+- The fit starts at the peak month, so where a well's top months are close, a small
+  change that makes another month the peak moves the start and the forecast (see
+  step 2 of *Methodology*).
 - Downtime is inferred from the fit because the data has no days-on: a month well
   under trend is read as part-month downtime. A genuine, lasting loss of productivity
   would be read the same way, and because those months are down-weighted, the fitted
@@ -425,15 +440,19 @@ Streamlit Community Cloud installs from.
 - **Tests** on Python 3.12 and 3.13.
 - **Committed outputs are current** — rebuilds `results/` and `public/` with
   `scripts/build_static.py` and compares them with the committed copies
-  (`scripts/check_outputs.py`): same files, columns and rows; numbers equal to a
+  (`scripts/check_outputs.py`) after clearing them, so an output the build no longer
+  writes shows up as missing: same files, columns and rows; numbers equal to a
   relative 1e-5, or 1e-3 for values computed from the bootstrap ensemble (its members,
   P90/P10, the chart band), with Plotly's base64 chart arrays decoded and compared as
-  numbers; text identical except that a displayed number may differ by one rounding
-  step. A rebuild on another machine differs in the last digits — one with the vector
-  math of a CPU without AVX-512, like GitHub's runners, differed from an AVX-512 build
-  by at most 3e-7 in deterministic values and 8e-5 in ensemble members — which is not
-  staleness, while a 0.001 change in the level factor moves P90/P10 by ~4e-3. If it
-  fails, run `python scripts/build_static.py` and commit `results/` and `public/`.
+  numbers; text identical except that a displayed number in the same format may
+  differ by one rounding step. A rebuild on another machine differs in the last digits
+  — one with the vector math of a CPU without AVX-512, like GitHub's runners, differed
+  from an AVX-512 build by at most 3e-7 in deterministic values and 8e-5 in ensemble
+  members — which is not staleness, while a 0.001 change in the level factor moves
+  P90/P10 by ~4e-3. For the same reason a forecast month within that noise of the
+  economic limit may be in on one machine and out on the other, so forecast lengths may
+  differ by one month (volumes by one month at the limit). If it fails, run
+  `python scripts/build_static.py` and commit `results/` and `public/`.
 
 ## Deploy free on Streamlit Cloud
 

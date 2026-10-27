@@ -5,8 +5,9 @@ import pytest
 
 from src import pipeline
 from src.arps import B_CAP
-from src.report import (RANGE_NOTE, RANKING, cohort_metrics, pv_label, ranking_cells,
-                        ranking_kinds, ranking_table, well_detail, well_metrics, well_ranges)
+from src.report import (RANGE_NOTE, RANKING, cohort_metrics, download_frame, pv_label,
+                        ranking_cells, ranking_kinds, ranking_table, well_detail, well_metrics,
+                        well_ranges)
 
 
 @pytest.mark.parametrize("rate, label", [(0.10, "PV10"), (0.1, "PV10"), (0.2, "PV20"),
@@ -66,3 +67,12 @@ def test_ranking_kinds_rejects_other_tables(case):
 
 def test_range_note_names_the_b_cap():
     assert f"held at the {B_CAP:g} cap" in RANGE_NOTE
+
+
+def test_download_names_pv_columns_for_the_rate(case):
+    results, label = case
+    cols = list(download_frame(results).columns)
+    pv = label.lower()
+    assert f"{pv}_usd" in cols and f"{pv}_p90_usd" in cols and f"{pv}_p10_usd" in cols
+    assert not any(c.startswith("pv") and not c.startswith(pv + "_") for c in cols)
+    assert len(cols) == len(results.columns)

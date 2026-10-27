@@ -45,9 +45,10 @@ R2_LOW_CONFIDENCE = 0.6  # fits below this R² (linear or log) are low-confidenc
 # Wells whose last this-many reported months are shut in or curtailed are
 # low-confidence: the forecast assumes they return to trend.
 CURTAILED_AT_END_LOW_CONFIDENCE = 2
-# Note wells with this many months read as curtailed and down-weighted in the
-# fit, so a fit that discounted much of the history does not look clean.
-CURTAILED_MONTHS_NOTE = 3
+# Note wells with this many months of inferred downtime (shut-in and curtailed
+# months taken off the producing clock and down-weighted in the fit), so a fit
+# that discounted much of the history does not look clean.
+DOWNTIME_NOTE_MONTHS = 3
 # Flag forecasts whose first month is off the recent producing rate (median of
 # the last 6 producing months, so one curtailed month does not trigger it) by
 # more than this factor in either direction.
@@ -86,9 +87,9 @@ def _qc_flags(row: dict, max_life_months: int) -> str:
         flags.append(f"forecast starts at {ratio:.2f}x recent rate")
     if row["b_at_cap"]:
         flags.append(f"b held at the {row['b_cap']} cap")
-    if row["curtailed_months"] >= CURTAILED_MONTHS_NOTE:
-        flags.append(f"{row['curtailed_months']} months under {CURTAIL_RATIO:.0%} of trend "
-                     "read as mostly shut in and given under half weight in the fit")
+    if row["downtime_months"] >= DOWNTIME_NOTE_MONTHS:
+        flags.append(f"{row['downtime_months']:.1f} months of downtime (shut-in and curtailed "
+                     "months) taken off the producing clock and down-weighted in the fit")
     if row["curtailed_months_at_end"]:
         flags.append(f"last {row['curtailed_months_at_end']} reported mo shut in or under "
                      f"{CURTAIL_RATIO:.0%} of trend; forecast assumes a return to trend, "

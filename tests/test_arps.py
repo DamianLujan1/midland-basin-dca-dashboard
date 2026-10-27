@@ -271,8 +271,14 @@ def test_a_month_of_a_few_barrels_counts_like_a_zero_month():
         return eur_bbl(fit["qi"], fit["Di_monthly"], fit["b"], series.sum(), DMIN, 150.0,
                        start_t=fit["producing_months"])["eur_bbl"]
     base = eur(q)
+    counts = fit_decline(q, qi_max=q.max())[0]
     for k in (20, 27):
         for few in (1.0, 10.0):
             qq = q.copy()
             qq[k] = few
             assert eur(qq) == pytest.approx(base + few, rel=1e-3)
+            # ... and in the QC counts (zero months are counted as shut in).
+            again = fit_decline(qq, qi_max=qq.max())[0]
+            for key in ("curtailed_months", "downweighted_months"):
+                assert again[key] == counts[key]
+            assert again["downtime_months"] == pytest.approx(counts["downtime_months"], abs=0.01)
